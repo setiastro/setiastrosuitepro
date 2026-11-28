@@ -18,6 +18,7 @@ from setiastro.saspro.thread_keeper import start_owned_thread, thread_running
 # off-GUI-thread display helpers shared with WaveScale HDR
 from setiastro.saspro.wavescale_hdr import (
     _JobThread, _apply_output, _doc_mask_finish, _mask_thumb_qimage, _rgb01, _rgb_to_qimage,
+    _amount_job, blend_amount, clamp_amount,
 )
 # Import shared wavelet utilities
 from setiastro.saspro.widgets.wavelet_utils import (
@@ -218,8 +219,10 @@ class DSEWorker(QObject):
 
 
 def _dse_preview_payload(original: np.ndarray, out: np.ndarray, mask: np.ndarray,
-                         doc_mask: np.ndarray | None, box_wh, want_qimage: bool) -> dict:
-    """What _on_finished used to build on the GUI thread."""
+                         doc_mask: np.ndarray | None, box_wh, want_qimage: bool,
+                         amount: float = 1.0) -> dict:
+    """What _on_finished used to build on the GUI thread. "full" is the result
+    at Amount 1; "preview" is it blended with the original at `amount`."""
     if out.ndim == 2:
         out_rgb = np.repeat(out[:, :, None], 3, axis=2)
     else:
@@ -240,9 +243,12 @@ def _dse_preview_payload(original: np.ndarray, out: np.ndarray, mask: np.ndarray
     # show combined mask (internal darkness mask × doc mask)
     if doc_mask is not None:
         mask = np.clip(mask.astype(np.float32) * doc_mask.astype(np.float32), 0.0, 1.0)
+    shown = blend_amount(original, preview, amount)
     return {
-        "preview": preview,
-        "qimg": _rgb_to_qimage(preview) if want_qimage else None,
+        "full": preview,
+        "preview": shown,
+        "amount": float(amount),
+        "qimg": _rgb_to_qimage(shown) if want_qimage else None,
         "thumb": _mask_thumb_qimage(mask, *box_wh) if box_wh else None,
     }
 
@@ -352,6 +358,10 @@ class WaveScaleDarkEnhancerDialogPro(QDialog):
 
         self.original = rgb
         self.preview  = rgb          # never modified in place; replaced by each preview
+        self._full = None            # last preview at Amount 100% (None: no preview yet)
+        self._blend_gen = 0          # bumped by each new preview / Reset; stale re-blends drop
+        self._blend_busy = False
+        self._blend_pending = False
 
         # off-GUI-thread state: L / darkness-mask cache, the two view pixmaps, mask jobs
         self._mask_cache = {}
@@ -377,11 +387,30 @@ class WaveScaleDarkEnhancerDialogPro(QDialog):
         self.s_boost  = QSlider(Qt.Orientation.Horizontal); self.s_boost.setRange(10, 1000); self.s_boost.setValue(500)  # 0.10..10.00
         self.s_gamma  = QSlider(Qt.Orientation.Horizontal); self.s_gamma.setRange(10, 1000); self.s_gamma.setValue(100)  # 0.10..10.00
         self.s_iters  = QSlider(Qt.Orientation.Horizontal); self.s_iters.setRange(1, 10);   self.s_iters.setValue(2)
+        # Amount: blend of the finished result with the original (no recompute)
+        self.s_amount = QSlider(Qt.Orientation.Horizontal); self.s_amount.setRange(0, 100); self.s_amount.setValue(100)
+        self.lbl_amount_val = QLabel(f"{int(self.s_amount.value())}%")
+        self.lbl_amount_val.setMinimumWidth(42)
+        self.lbl_amount_val.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        _tip_amount = self.tr(
+            "Amount (0-100%)\n\n"
+            "Blends the finished result with the original image. 100% is the "
+            "full effect, 0% leaves the image unchanged.\n\n"
+            "Changing it after a Preview re-blends the preview without "
+            "recomputing. Default: 100%."
+        )
+        self.s_amount.setToolTip(_tip_amount)
+        self.lbl_amount_val.setToolTip(_tip_amount)
+        self.s_amount.valueChanged.connect(lambda v: self.lbl_amount_val.setText(f"{int(v)}%"))
+        amount_row = QHBoxLayout()
+        amount_row.addWidget(self.s_amount, 1)
+        amount_row.addWidget(self.lbl_amount_val)
 
         form.addRow(self.tr("Number of Scales:"), self.s_scales)
         form.addRow(self.tr("Boost Factor:"), self.s_boost)
         form.addRow(self.tr("Mask Gamma:"), self.s_gamma)
         form.addRow(self.tr("Iterations:"), self.s_iters)
+        form.addRow(self.tr("Amount:"), amount_row)
 
         row = QHBoxLayout()
         self.btn_preview = QPushButton(self.tr("Preview"))
@@ -471,6 +500,12 @@ class WaveScaleDarkEnhancerDialogPro(QDialog):
         self._gamma_timer.setSingleShot(True)
         self._gamma_timer.timeout.connect(self._update_mask_only)
         self.s_gamma.valueChanged.connect(lambda _v: self._gamma_timer.start(250))
+
+        # Amount re-blends the last preview (debounced, off the GUI thread)
+        self._blend_timer = QTimer(self)
+        self._blend_timer.setSingleShot(True)
+        self._blend_timer.timeout.connect(self._update_amount_blend)
+        self.s_amount.valueChanged.connect(lambda _v: self._blend_timer.start(120))
 
         # init preview & initial mask (built by a background job; the dialog
         # opens without waiting for it)
@@ -592,10 +627,13 @@ class WaveScaleDarkEnhancerDialogPro(QDialog):
 
     # --- reset ---
     def _reset(self):
+        self._full = None
+        self._blend_gen += 1                # a re-blend still running is dropped
         self.s_scales.setValue(6)
         self.s_boost.setValue(500)
         self.s_gamma.setValue(100)
         self.s_iters.setValue(2)
+        self.s_amount.setValue(100)
         self.preview = self.original
         self._pm_preview = None
         self._show_original()
@@ -613,6 +651,7 @@ class WaveScaleDarkEnhancerDialogPro(QDialog):
             "boost_factor": float(self.s_boost.value()) / 100.0,
             "mask_gamma": float(self.s_gamma.value()) / 100.0,
             "iterations": int(self.s_iters.value()),
+            "amount": float(self.s_amount.value()) / 100.0,
         }
 
     # -------- preset seed (double-click open) --------
@@ -640,6 +679,8 @@ class WaveScaleDarkEnhancerDialogPro(QDialog):
             self.s_iters.setValue(max(1, min(10, it)))
         except Exception:
             pass
+        # presets made before Amount existed have no key: full effect, as they ran then
+        self.s_amount.setValue(int(round(clamp_amount(p.get("amount", 1.0)) * 100)))
         # Refresh the mask window (depends on gamma AND n_scales).
         try:
             self._update_mask_only()
@@ -704,7 +745,8 @@ class WaveScaleDarkEnhancerDialogPro(QDialog):
         # in the worker (the mask lookup + normalisation stays here)
         docmask_pre = self._doc_mask_prenorm()
         post = functools.partial(_dse_preview_payload, self.original,
-                                 box_wh=self._mask_box(), want_qimage=True)
+                                 box_wh=self._mask_box(), want_qimage=True,
+                                 amount=self._amount())
         # no parent: thread_keeper holds it, so closing the dialog mid-run is safe
         self.thread = QThread()
         self.worker = DSEWorker(self.original, n_scales, boost, mgamma,
@@ -731,6 +773,8 @@ class WaveScaleDarkEnhancerDialogPro(QDialog):
             return
 
         # doc-mask blend, combined mask and display images were done in the worker
+        self._blend_gen += 1                # an older re-blend must not land on this preview
+        self._full = payload["full"]
         self.preview = payload["preview"]
         qimg = payload.get("qimg")
         self._pm_preview = QPixmap.fromImage(qimg) if qimg is not None else None
@@ -740,12 +784,51 @@ class WaveScaleDarkEnhancerDialogPro(QDialog):
         self.btn_apply.setEnabled(True)
         self.btn_toggle.setChecked(False); self.btn_toggle.setText(self.tr("Show Original"))
         self.lbl_step.setText(self.tr("Preview ready")); self.bar.setValue(100)
+        if self._amount() != payload.get("amount"):
+            self._update_amount_blend()     # Amount moved while it computed
+
+    # --- Amount re-blend ---
+    def _amount(self) -> float:
+        return float(self.s_amount.value()) / 100.0
+
+    def _update_amount_blend(self):
+        """Re-blend the last preview at the current Amount. Runs in a background
+        job; a request made while one runs is queued with the then-current value."""
+        if getattr(self, "_memory_released", False) or self._full is None:
+            return
+        if self._blend_busy:
+            self._blend_pending = True
+            return
+        self._blend_pending = False
+        self._blend_busy = True
+        self._blend_job_gen = self._blend_gen    # one job at a time, so one slot
+        job = functools.partial(_amount_job, self.original, self._full, self._amount(), True)
+        self._blend_thr = _JobThread(job)
+        self._blend_thr.done.connect(self._on_amount_blend_done)
+        start_owned_thread(self._blend_thr)
+
+    def _on_amount_blend_done(self, res, err):
+        self._blend_busy = False
+        if getattr(self, "_memory_released", False):
+            return
+        if err is not None:
+            print("WaveScale DSE amount blend error:", err)
+        if res is not None and self._blend_job_gen == self._blend_gen and self._full is not None:
+            self.preview = res["preview"]
+            self._pm_preview = QPixmap.fromImage(res["qimg"]) if res.get("qimg") is not None else None
+            if not self.btn_toggle.isChecked():
+                self._show_preview()
+        if self._blend_pending:
+            self._update_amount_blend()
 
     # --- apply back to doc ---
-    # --- apply back to doc ---
     def _apply_to_doc(self):
+        # Amount is blended here from the full result, not read from the shown
+        # preview, so a re-blend still in flight cannot make Apply use a stale value.
+        rgb = self.preview if self._full is None else blend_amount(
+            self.original, self._full, self._amount())
         # mono: channel mean (2-D or H×W×1 as the source was); clip to [0,1]
-        out = _apply_output(self.preview, self._was_mono, self._mono_shape)
+        out = _apply_output(rgb, self._was_mono, self._mono_shape)
         _meta = {"step_name": "WaveScale Dark Enhancer",
                  "command_id": "wavescale_dark_enhance",
                  "preset": dict(self.get_preset())}
@@ -760,12 +843,7 @@ class WaveScaleDarkEnhancerDialogPro(QDialog):
 
         # ── Build preset from current sliders ─────────────────────────
         try:
-            preset = {
-                "n_scales": int(self.s_scales.value()),
-                "boost_factor": float(self.s_boost.value()) / 100.0,
-                "mask_gamma": float(self.s_gamma.value()) / 100.0,
-                "iterations": int(self.s_iters.value()),
-            }
+            preset = dict(self.get_preset())
         except Exception:
             preset = {}
 
@@ -787,7 +865,8 @@ class WaveScaleDarkEnhancerDialogPro(QDialog):
                             f"last action (n_scales={preset.get('n_scales')}, "
                             f"boost={preset.get('boost_factor')}, "
                             f"mask_gamma={preset.get('mask_gamma')}, "
-                            f"iterations={preset.get('iterations')})"
+                            f"iterations={preset.get('iterations')}, "
+                            f"amount={preset.get('amount')})"
                         )
                 except Exception:
                     pass
@@ -795,26 +874,8 @@ class WaveScaleDarkEnhancerDialogPro(QDialog):
             # Never let replay wiring break the apply
             pass
 
-        # Dialog stays open so user can apply to other images
-        # Refresh document reference for next operation
-        self._refresh_document_from_active()
-
-    def _refresh_document_from_active(self):
-        """
-        Refresh the dialog's document reference to the currently active document.
-        This allows reusing the same dialog on different images.
-        """
-        try:
-            main = self.parent()
-            if main and hasattr(main, "_active_doc"):
-                new_doc = main._active_doc()
-                if new_doc is not None and new_doc is not self._doc:
-                    self._doc = new_doc
-                    # Reset state and refresh for new document
-                    self._L_original = None
-                    self._last_preview = None
-        except Exception:
-            pass
+        # Applied: the tool's job is done, so it closes.
+        self.accept()
 
     def closeEvent(self, ev):
         self._close_teardown()
@@ -852,6 +913,7 @@ class WaveScaleDarkEnhancerDialogPro(QDialog):
 
         self.original = None
         self.preview = None
+        self._full = None
         self._L_original = None
         self._mask_cache = {}
         self._pm_original = None

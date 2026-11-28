@@ -10,6 +10,7 @@ from setiastro.saspro.legacy.xisf import XISF as XISFReader
 from astropy.io import fits  # local import; optional dep
 from setiastro.saspro.legacy.image_manager import load_image as legacy_load_image, save_image as legacy_save_image
 from setiastro.saspro.legacy.image_manager import list_fits_extensions, load_fits_extension
+from setiastro.saspro.legacy.image_manager import header_loaded_bottom_up, _is_fits_image_hdu
 import uuid
 from setiastro.saspro.legacy.image_manager import attach_wcs_to_metadata  # or wherever you put it
 from astropy.wcs import WCS  # only if not already imported in this module
@@ -765,6 +766,25 @@ def _save_lowers_fidelity(ext: str, written_depth, doc_depth) -> bool:
     return w is not None and w < d
 
 
+_FITS_SAVE_EXTS = ("fit", "fits", "fts", "fz")
+
+
+def document_source_bottom_up(meta) -> bool:
+    """True when the document's FITS source stores its rows BOTTOM-UP.
+
+    Save As shows this as its "Same as source file" row order, and
+    save_document follows it when no row order was chosen. A FITS save
+    records what it wrote in metadata["source_roworder"]. Before any save,
+    load_image's record or the ROWORDER comment it left on the header decides
+    (the comment covers tools that copy only headers).
+    """
+    meta = meta if isinstance(meta, dict) else {}
+    ro = str(meta.get("source_roworder", "") or "").strip().upper()
+    if ro in ("BOTTOM-UP", "TOP-DOWN"):
+        return ro == "BOTTOM-UP"
+    return any(header_loaded_bottom_up(meta.get(k)) for k in ("original_header", "fits_header"))
+
+
 _ALLOWED_DEPTHS = {
     "png":  {"8-bit"},
     "jpg":  {"8-bit"},
@@ -773,6 +793,7 @@ _ALLOWED_DEPTHS = {
     # ".fts" is in the Save As FITS filter; without an entry here the depth
     # the dialog picked was validated against an empty set.
     "fts":  ["8-bit", "16-bit", "32-bit unsigned", "32-bit floating point"],
+    "fz":   ["8-bit", "16-bit", "32-bit unsigned", "32-bit floating point"],
     "tif":  {"8-bit", "16-bit", "32-bit unsigned", "32-bit floating point"},
     "xisf": {"16-bit", "32-bit unsigned", "32-bit floating point"},
     "psb":  {"16-bit", "32-bit floating point"},
@@ -855,7 +876,12 @@ class ImageDocument(QObject):
 
         # Track unsaved changes explicitly
         self.dirty: bool = False
-        
+        # True once the image is in a file: opened from one (open_path), saved
+        # to one at full depth (save_document), or restored from / saved into
+        # a project. A tool's result (Perfect Palette Picker, RGB Combination,
+        # a duplicate ...) starts False, so Exit can tell it was never saved.
+        self.saved_to_file: bool = False
+
         # Copy-on-write support: if this document shares image data with another,
         # _cow_source holds reference to the source. On first write (apply_edit),
         # we copy the image data and clear _cow_source.
@@ -3148,8 +3174,14 @@ class DocManager(QObject):
         return getattr(self, "_new_data_depth", 0) > 0
 
     def open_path(self, path: str, open_auxiliary_images: bool | None = None):
+        n0 = len(self._docs)
         with self.opening_new_data():
-            return self._open_path(path, open_auxiliary_images)
+            doc = self._open_path(path, open_auxiliary_images)
+        # The file's own data: the primary image and any extra HDUs it opened.
+        for d in [doc, *self._docs[n0:]]:
+            if d is not None:
+                d.saved_to_file = True
+        return doc
 
     def _open_path(self, path: str, open_auxiliary_images: bool | None = None):
         ext = os.path.splitext(path)[1].lower().lstrip('.')
@@ -3497,9 +3529,19 @@ class DocManager(QObject):
                     except Exception:
                         primary_hdr = None
 
+                    # The primary view came from the first image HDU, which is
+                    # not always HDU 0: a tile-compressed .fz keeps its image
+                    # in HDU 1. Opening it again here gave a second view, and
+                    # an unflipped one when the file was BOTTOM-UP.
+                    primary_img_idx = None
+                    if primary_doc is not None:
+                        primary_img_idx = next(
+                            (j for j, h in enumerate(hdul) if _is_fits_image_hdu(h)), None)
+
                     for i, hdu in enumerate(hdul):
                         name_up = (getattr(hdu, "name", "PRIMARY") or "PRIMARY").upper()
-                        if primary_doc is not None and (i == 0 or name_up == "PRIMARY"):
+                        if primary_doc is not None and (
+                                i == 0 or name_up == "PRIMARY" or i == primary_img_idx):
                             continue
 
                         ext_hdr = hdu.header
@@ -4183,6 +4225,26 @@ class DocManager(QObject):
 
         wcs_hdr = _to_fits_header(meta.get("wcs_header"))
 
+        # FITS row order: the Save As / Export choice, else the source's own.
+        # A FITS that was BOTTOM-UP on disk (Siril's order) goes back
+        # BOTTOM-UP, because Siril opens SASpro's top-down FITS upside down.
+        # Only document saves do this; pipeline intermediates stay top-down.
+        # The metadata record survives a plate solve, whose header rebuild
+        # drops the ROWORDER comment.
+        is_fits_save = ext in _FITS_SAVE_EXTS
+        row_order = str(export_opts.get("fits_row_order") or "").strip().lower()
+        if row_order in ("bottom-up", "top-down"):
+            fits_bottom_up = is_fits_save and row_order == "bottom-up"
+        else:
+            fits_bottom_up = is_fits_save and document_source_bottom_up(meta)
+        # An explicit Top-down says so in the file. (Absent means top-down to
+        # SASpro and PixInsight, but bottom-up to FITS-native readers.)
+        if (is_fits_save and row_order == "top-down"
+                and isinstance(effective_header, fits.Header)
+                and "ROWORDER" not in effective_header):
+            effective_header = effective_header.copy()
+            effective_header["ROWORDER"] = ("TOP-DOWN", "Order of the rows in image array")
+
         # --- If export requested resize, pre-scale WCS in the headers we pass ---
         # These scaled headers go to the encoder only. They describe the smaller
         # file, not doc.image, so they are never written back to the document.
@@ -4229,6 +4291,7 @@ class DocManager(QObject):
             wcs_header=wcs_hdr,                 # <-- use the pre-scaled wcs header
             jpeg_quality=jpeg_quality,
             export_opts=export_opts,
+            fits_bottom_up=fits_bottom_up,
         )
 
         # ── Never downgrade the open document ─────────────────────────────
@@ -4247,6 +4310,8 @@ class DocManager(QObject):
         meta["file_path"] = path
         meta["original_format"] = ext
         meta["bit_depth"] = final_bit_depth   # same depth or higher, never lower
+        if is_fits_save:    # the file the document now points at
+            meta["source_roworder"] = "BOTTOM-UP" if fits_bottom_up else "TOP-DOWN"
 
         # Store the header we actually used, unless the write was resized:
         # that header's WCS is scaled to the smaller file, not to doc.image.
@@ -4267,6 +4332,7 @@ class DocManager(QObject):
         # reset dirty flag
         if hasattr(doc, "dirty"):
             doc.dirty = False
+        doc.saved_to_file = True
 
         if hasattr(doc, "changed"):
             doc.changed.emit()

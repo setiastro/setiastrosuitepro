@@ -4711,6 +4711,34 @@ Tools you added are taken off, the ones you removed come back, and the order is 
       <source>All Analysis Tools</source>
       <translation>所有分析工具</translation>
     </message>
+    <message>
+      <source>Scripts &amp;&amp; &amp;Workflows</source>
+      <translation>脚本与工作流程(&amp;W)</translation>
+    </message>
+    <message>
+      <source>Help</source>
+      <translation>帮助</translation>
+    </message>
+    <message>
+      <source>Variable Stars &amp;&amp; Exoplanets...</source>
+      <translation>变星与系外行星...</translation>
+    </message>
+    <message>
+      <source>Find variable stars and exoplanet transits in time-series subs</source>
+      <translation>在时间序列子帧中寻找变星和系外行星凌日</translation>
+    </message>
+    <message>
+      <source>Don't ask again unless there are unsaved images</source>
+      <translation>不再询问，除非有未保存的图像</translation>
+    </message>
+    <message>
+      <source>Preferences &gt; Always ask before exiting turns it back on.</source>
+      <translation>可在 首选项 &gt; 退出前始终询问 中重新开启。</translation>
+    </message>
+    <message>
+      <source>Never saved:</source>
+      <translation>从未保存：</translation>
+    </message>
   </context>
   <context>
     <name>AstrobinExportTab</name>
@@ -13739,6 +13767,118 @@ the border) or the frame doesn't cover it.</source>
       <source>⚠️ Using approximate XISF WCS (star matching may be imprecise)</source>
       <translation>⚠️ 正在使用近似的 XISF WCS（恒星匹配可能不精确）</translation>
     </message>
+    <message>
+      <source>Variable Stars &amp; Exoplanets</source>
+      <translation>变星与系外行星</translation>
+    </message>
+    <message>
+      <source>Calibrated Subs</source>
+      <translation>已校准的子帧</translation>
+    </message>
+    <message>
+      <source>Load Frames</source>
+      <translation>加载帧</translation>
+    </message>
+    <message>
+      <source>Frames already loaded: {0}
+New frames selected: {1}</source>
+      <translation>已加载的帧：{0}
+新选择的帧：{1}</translation>
+    </message>
+    <message>
+      <source>Add</source>
+      <translation>添加</translation>
+    </message>
+    <message>
+      <source>Replace</source>
+      <translation>替换</translation>
+    </message>
+    <message>
+      <source>Select Calibrated Frames</source>
+      <translation>选择已校准的帧</translation>
+    </message>
+    <message>
+      <source>Fold at:</source>
+      <translation>折叠周期：</translation>
+    </message>
+    <message>
+      <source>Lomb-Scargle peak</source>
+      <translation>Lomb-Scargle 峰值</translation>
+    </message>
+    <message>
+      <source>2 × Lomb-Scargle peak</source>
+      <translation>2 × Lomb-Scargle 峰值</translation>
+    </message>
+    <message>
+      <source>BLS period</source>
+      <translation>BLS 周期</translation>
+    </message>
+    <message>
+      <source>2 × BLS period</source>
+      <translation>2 × BLS 周期</translation>
+    </message>
+    <message>
+      <source>Custom</source>
+      <translation>自定义</translation>
+    </message>
+    <message>
+      <source>Period:</source>
+      <translation>周期：</translation>
+    </message>
+    <message>
+      <source>Detrended</source>
+      <translation>已去趋势</translation>
+    </message>
+    <message>
+      <source>Phase (0 = minimum light)</source>
+      <translation>相位（0 = 极小亮度）</translation>
+    </message>
+    <message>
+      <source>No usable points to fold.</source>
+      <translation>没有可用于折叠的数据点。</translation>
+    </message>
+    <message>
+      <source>data</source>
+      <translation>数据</translation>
+    </message>
+    <message>
+      <source>phase bins (0.02)</source>
+      <translation>相位分箱 (0.02)</translation>
+    </message>
+    <message>
+      <source>{0} — folded at P = {1:.6f} d</source>
+      <translation>{0} — 按 P = {1:.6f} d 折叠</translation>
+    </message>
+    <message>
+      <source>Variable Star Fold</source>
+      <translation>变星相位折叠</translation>
+    </message>
+    <message>
+      <source>Add the new frames to the loaded ones (another night, or another folder), or replace them?</source>
+      <translation>将新帧添加到已加载的帧中（另一个夜晚或另一个文件夹），还是替换它们？</translation>
+    </message>
+    <message>
+      <source>Period to fold at.  Lomb-Scargle suits smooth variation (pulsating
+stars); BLS suits eclipses.  An EW binary's two minima put both at
+half its period: use the 2 × choices.  Type a period for Custom.</source>
+      <translation>用于折叠的周期。Lomb-Scargle 适合平滑变化（脉动
+变星）；BLS 适合食。EW 双星的两个极小会使两者都落在
+其周期的一半：请使用 2 × 选项。选择自定义可输入周期。</translation>
+    </message>
+    <message>
+      <source>Off: the differential flux before detrending, every night at its own
+level.  A trend fit can take part of a slow variation with it.
+On: the curve with the main window's Detrend applied, which also
+divides out the step at a meridian flip.</source>
+      <translation>关闭：去趋势之前的差分通量，每晚保持各自的
+水平。趋势拟合可能会带走部分缓慢变化。
+开启：应用主窗口去趋势后的曲线，它还会
+除去中天翻转处的跳变。</translation>
+    </message>
+    <message>
+      <source>P = {0:.6f} d ({1:.3f} h)   Minimum light JD {2:.5f} (UTC)   Binned amplitude {3:.3f} mag   {4:.1f} cycles covered</source>
+      <translation>P = {0:.6f} d ({1:.3f} h)   极小亮度 JD {2:.5f} (UTC)   分箱振幅 {3:.3f} mag   覆盖 {4:.1f} 个周期</translation>
+    </message>
   </context>
   <context>
     <name>FITSModifier</name>
@@ -18903,6 +19043,14 @@ Ctrl + 单击 &amp; 拖动以平移。
       <source>🖱️ &lt;b&gt;Click&lt;/b&gt;: show hue  &amp;nbsp;•&amp;nbsp; &lt;b&gt;Shift+Click&lt;/b&gt;: select that color  &amp;nbsp;•&amp;nbsp; &lt;b&gt;Ctrl+Drag&lt;/b&gt;: pan  &amp;nbsp;•&amp;nbsp; &lt;b&gt;Alt+Drag&lt;/b&gt;: draw region mask  &amp;nbsp;•&amp;nbsp; &lt;b&gt;Wheel&lt;/b&gt;: zoom</source>
       <translation>🖱️ &lt;b&gt;单击&lt;/b&gt;：显示色相  &amp;nbsp;•&amp;nbsp; &lt;b&gt;Shift+单击&lt;/b&gt;：选择该颜色  &amp;nbsp;•&amp;nbsp; &lt;b&gt;Ctrl+拖动&lt;/b&gt;：平移  &amp;nbsp;•&amp;nbsp; &lt;b&gt;Alt+拖动&lt;/b&gt;：绘制区域蒙版  &amp;nbsp;•&amp;nbsp; &lt;b&gt;滚轮&lt;/b&gt;：缩放</translation>
     </message>
+    <message>
+      <source>Chromaticity</source>
+      <translation>色度</translation>
+    </message>
+    <message>
+      <source>Lightness</source>
+      <translation>明度</translation>
+    </message>
   </context>
   <context>
     <name>SettingsDialog</name>
@@ -19957,6 +20105,22 @@ Please restart SASpro to activate GPU acceleration.</source>
     <message>
       <source>System</source>
       <translation>系统</translation>
+    </message>
+    <message>
+      <source>This is already being installed by the setup window. Help &gt; Welcome and Setup shows its progress.</source>
+      <translation>设置窗口已在安装此项。帮助 &gt; 欢迎与设置 中可查看进度。</translation>
+    </message>
+    <message>
+      <source>Always ask before exiting</source>
+      <translation>退出前始终询问</translation>
+    </message>
+    <message>
+      <source>Checked, SASpro asks before it closes.
+Unchecked, it only asks when an image has unsaved edits or was
+never saved, or an install or download is still running.</source>
+      <translation>勾选时，SASpro 在关闭前询问。
+取消勾选时，仅在有图像存在未保存的编辑或从未保存过，
+或仍有安装或下载正在进行时询问。</translation>
     </message>
   </context>
   <context>
@@ -28460,6 +28624,57 @@ Kept: the stacking folder and other paths, the loaded frames, the masters and th
 
 保留：叠加文件夹及其他路径、已加载的帧、主帧及其 Dark/Flat 选择、配准组和参考帧、您保存的配置文件，以及“优化…”的测量结果。当帧按某个分组容差分组时，该容差会被保留。</translation>
     </message>
+    <message>
+      <source>New master after a gap of:</source>
+      <translation>间隔超过以下天数时新建主暗场:</translation>
+    </message>
+    <message>
+      <source> days</source>
+      <translation> 天</translation>
+    </message>
+    <message>
+      <source>every night</source>
+      <translation>每晚</translation>
+    </message>
+    <message>
+      <source>Darks with the same exposure, temperature, gain and offset make one master
+until there is a gap of more than this many days between the nights they
+were shot. A dark library shot over a few nights stays one master; darks
+from other months or years become separate masters, and each light uses
+the master nearest its own date.
+Every night: one master per night. Darks with no date combine as before.</source>
+      <translation>曝光、温度、增益和偏置相同的暗场合成一个主暗场，
+直到拍摄夜晚之间的间隔超过此天数。
+几晚内拍摄的暗场库仍为一个主暗场；其他月份或年份的暗场
+成为单独的主暗场，每个亮场使用日期最接近的主暗场。
+每晚：每晚一个主暗场。没有日期的暗场照旧合成。</translation>
+    </message>
+    <message>
+      <source>Shared session-detection toggle (also affects Lights and Flats).
+Darks don't use sessions: they combine by exposure, image size,
+temperature, gain and offset, and split only by 'New master after
+a gap of', so this setting does not change how darks are combined.</source>
+      <translation>共享的会话检测开关（同时影响亮场和平场）。
+暗场不使用会话：按曝光、图像尺寸、温度、增益和偏置合成，
+只按“间隔超过以下天数时新建主暗场”拆分，
+因此此设置不会改变暗场的合成方式。</translation>
+    </message>
+    <message>
+      <source>⚠ darks from {0}, {1} days from these frames</source>
+      <translation>⚠ {0} 的暗场，与这些帧相隔 {1} 天</translation>
+    </message>
+    <message>
+      <source>Auto picks by size, then gain, exposure, date and temperature. Each flat group's Dark row shows its pick: choose another master, or None, there.</source>
+      <translation>自动按尺寸选择，其次是增益、曝光、日期和温度。每个平场组的“暗场”行会显示所选项：可在该处改选其他主暗场，或选“无”。</translation>
+    </message>
+    <message>
+      <source>Auto picks by size, then gain, exposure, date and temperature. Pick another master, or None, for this group only. Right-click frames to give them their own.</source>
+      <translation>自动按尺寸选择，其次是增益、曝光、日期和温度。可仅为本组改选其他主校准帧，或选“无”。右键单击帧可为其单独指定。</translation>
+    </message>
+    <message>
+      <source>Auto picks by size, then gain, exposure, date and temperature. Pick another master, or None, for this group only.</source>
+      <translation>自动按尺寸选择，其次是增益、曝光、日期和温度。可仅为本组改选其他主校准帧，或选“无”。</translation>
+    </message>
   </context>
   <context>
     <name>StarSpikesDialogPro</name>
@@ -31469,6 +31684,14 @@ Open images, tool settings, presets and shortcuts are not changed.</source>
     <message>
       <source>analyze dither offsets from a set of frames or a completed stack run</source>
       <translation>分析一组帧或已完成叠加运行中的抖动偏移</translation>
+    </message>
+    <message>
+      <source>Variable Stars &amp;&amp; Exoplanets...</source>
+      <translation>变星与系外行星...</translation>
+    </message>
+    <message>
+      <source>Find variable stars and exoplanet transits in time-series subs</source>
+      <translation>在时间序列子帧中寻找变星和系外行星凌日</translation>
     </message>
   </context>
   <context>
@@ -39947,6 +40170,46 @@ SASpro 会检查以下位置：
 
 在安装该配置文件之前，显示和导出标记将回退到 sRGB。</translation>
     </message>
+    <message>
+      <source>FITS options</source>
+      <translation>FITS 选项</translation>
+    </message>
+    <message>
+      <source>Same as source file</source>
+      <translation>与源文件相同</translation>
+    </message>
+    <message>
+      <source>Same as source file (bottom-up)</source>
+      <translation>与源文件相同（自下而上）</translation>
+    </message>
+    <message>
+      <source>Same as source file (top-down)</source>
+      <translation>与源文件相同（自上而下）</translation>
+    </message>
+    <message>
+      <source>Top-down</source>
+      <translation>自上而下</translation>
+    </message>
+    <message>
+      <source>Bottom-up</source>
+      <translation>自下而上</translation>
+    </message>
+    <message>
+      <source>The order the image rows are stored in. SASpro and PixInsight read both,
+using the ROWORDER keyword. Siril shows top-down files upside down, so
+use Bottom-up for files going to Siril.
+Same as source file: bottom-up when the image came from a bottom-up
+FITS (Siril's own files), top-down otherwise.</source>
+      <translation>图像行的存储顺序。SASpro 和 PixInsight 通过 ROWORDER 关键字
+两种都能读取。Siril 会把自上而下的文件显示为上下颠倒，
+因此要在 Siril 中使用的文件请选择“自下而上”。
+与源文件相同：图像来自自下而上的 FITS（Siril 自己的文件）时为自下而上，
+否则为自上而下。</translation>
+    </message>
+    <message>
+      <source>Row order</source>
+      <translation>行顺序</translation>
+    </message>
   </context>
   <context>
     <name>FXDialog</name>
@@ -41069,6 +41332,14 @@ Drawn chart: a vector star chart (SVG / PDF / PNG / new image).</source>
       <source>💡 The Icon Cheat Sheet under View → Shortcuts shows every toolbar icon with its function at a glance.</source>
       <translation>💡 “视图 → 快捷方式”下的图标速查表可一目了然地显示每个工具栏图标及其功能。</translation>
     </message>
+    <message>
+      <source>💡 Bored? Check under the Help menu. You're welcome. 🙂</source>
+      <translation>💡 无聊了？去“帮助”菜单下看看。不用谢。🙂</translation>
+    </message>
+    <message>
+      <source>💡 Press F1 (Help → Documentation) to browse and search every SASpro help page.</source>
+      <translation>💡 按 F1（帮助 → 文档）可浏览和搜索所有 SASpro 帮助页面。</translation>
+    </message>
   </context>
   <context>
     <name>FirstStepsTour</name>
@@ -41235,6 +41506,14 @@ Crop is under Functions → Repair &amp; Retouch → Crop. Drag the box inside t
     <message>
       <source>First Steps</source>
       <translation>入门步骤</translation>
+    </message>
+    <message>
+      <source>Ctrl+Z undoes any step, and Edit → History Explorer lists them all.
+
+A full workflow removes gradients and calibrates colour before stretching. The beginner tutorial walks through it.</source>
+      <translation>Ctrl+Z 可撤销任何步骤，“编辑 → 历史浏览器”会列出所有步骤。
+
+完整的工作流程会在拉伸前移除梯度并校准颜色。入门教程会逐步讲解。</translation>
     </message>
   </context>
   <context>
@@ -43028,6 +43307,10 @@ Drop directly on an image to apply them headlessly.</source>
     <message>
       <source>Workflow Assistant</source>
       <translation>工作流助手</translation>
+    </message>
+    <message>
+      <source>Variable Stars &amp; Exoplanets</source>
+      <translation>变星与系外行星</translation>
     </message>
   </context>
   <context>
@@ -56061,6 +56344,84 @@ If the result looks overcorrected, try 'poly2' instead of '{7}'.</source>
       <source>Step 1: Fetch Stars &amp;&amp; Spectra from Current View</source>
       <translation>步骤 1：从当前视图获取恒星 &amp;&amp; 光谱</translation>
     </message>
+    <message>
+      <source>Optical Chain</source>
+      <translation>光学链路</translation>
+    </message>
+    <message>
+      <source>Options</source>
+      <translation>选项</translation>
+    </message>
+    <message>
+      <source>Calibrate</source>
+      <translation>校准</translation>
+    </message>
+    <message>
+      <source>Light-pollution or UV/IR-cut filters in the light path, if any.</source>
+      <translation>光路中的光害滤镜或 UV/IR 截止滤镜（如有）。</translation>
+    </message>
+    <message>
+      <source>Also make the sky background neutral grey after calibrating.</source>
+      <translation>校准后同时将天空背景调整为中性灰。</translation>
+    </message>
+    <message>
+      <source>The camera's sensor (its QE curve).</source>
+      <translation>相机的传感器（其 QE 曲线）。</translation>
+    </message>
+    <message>
+      <source>Plot the filter, sensor and star curves against each other.</source>
+      <translation>将滤镜、传感器和恒星曲线绘制在一起比较。</translation>
+    </message>
+    <message>
+      <source>The star that should come out white. G2V (the Sun) is the usual choice;
+an average spiral galaxy is close to it.</source>
+      <translation>应呈现为白色的恒星。通常选择 G2V（太阳）；
+平均旋涡星系与之接近。</translation>
+    </message>
+    <message>
+      <source>Calibrates the colour of the active view from the spectra of the stars in it. It needs a plate solution and offers to make one.</source>
+      <translation>根据活动视图中恒星的光谱校准其颜色。需要天体测量解析结果，如果没有，会提示进行解析。</translation>
+    </message>
+    <message>
+      <source>Find the stars, look up their spectra, measure them and correct the colour
+of the active view, all in one go.</source>
+      <translation>查找恒星、检索其光谱、测量并校正
+活动视图的颜色，一步完成。</translation>
+    </message>
+    <message>
+      <source>&lt;b&gt;Calibrated&lt;/b&gt; with {0} stars ({1} Gaia XP spectra, {2} Pickles templates) in {3:.1f} s.&lt;br&gt;Model: {4} · R ratio @ x=1: {5:.4f} · B ratio @ x=1: {6:.4f}</source>
+      <translation>&lt;b&gt;已校准&lt;/b&gt;：使用 {0} 颗恒星（{1} 条 Gaia XP 光谱，{2} 个 Pickles 模板），用时 {3:.1f} 秒。&lt;br&gt;模型：{4} · R 比值 @ x=1：{5:.4f} · B 比值 @ x=1：{6:.4f}</translation>
+    </message>
+    <message>
+      <source>No Image</source>
+      <translation>无图像</translation>
+    </message>
+    <message>
+      <source>Open an image and make it the active view first.</source>
+      <translation>请先打开一幅图像并将其设为活动视图。</translation>
+    </message>
+    <message>
+      <source>This image isn't plate-solved yet. Run the plate solver now?</source>
+      <translation>此图像尚未进行天体测量解析。现在运行解析器吗？</translation>
+    </message>
+    <message>
+      <source>Plate Solve Error</source>
+      <translation>天体测量解析错误</translation>
+    </message>
+    <message>
+      <source>Plate Solve Failed</source>
+      <translation>解析失败</translation>
+    </message>
+    <message>
+      <source>Calibrated ✓</source>
+      <translation>已校准 ✓</translation>
+    </message>
+    <message>
+      <source>Applied to this image. It turns back into Calibrate when you change a setting,
+switch to another image or undo.</source>
+      <translation>已应用于此图像。更改设置、切换到其他图像或撤销后，
+按钮会恢复为“校准”。</translation>
+    </message>
   </context>
   <context>
     <name>SLaPToolkit</name>
@@ -57463,6 +57824,402 @@ Stars are selected brightest-first, XP stars prioritized.
       <source>🔬  Step 2: Run SSSC Calibration</source>
       <translation>🔬  第 2 步：运行 SSSC 校准</translation>
     </message>
+    <message>
+      <source>Optical Chain</source>
+      <translation>光学链路</translation>
+    </message>
+    <message>
+      <source>Options</source>
+      <translation>选项</translation>
+    </message>
+    <message>
+      <source>Calibrate</source>
+      <translation>校准</translation>
+    </message>
+    <message>
+      <source>Light-pollution or UV/IR-cut filters in the light path, if any.</source>
+      <translation>光路中的光害滤镜或 UV/IR 截止滤镜（如有）。</translation>
+    </message>
+    <message>
+      <source>Also make the sky background neutral grey after calibrating.</source>
+      <translation>校准后同时将天空背景调整为中性灰。</translation>
+    </message>
+    <message>
+      <source>The star that should come out white. G2V (the Sun) is the usual choice.</source>
+      <translation>应呈现为白色的恒星。通常选择 G2V（太阳）。</translation>
+    </message>
+    <message>
+      <source>No sensor curve: SSSC solves the sensor's response from the stars.</source>
+      <translation>无需传感器曲线：SSSC 从恒星求解传感器响应。</translation>
+    </message>
+    <message>
+      <source>Session History</source>
+      <translation>会话历史</translation>
+    </message>
+    <message>
+      <source>Max stars:</source>
+      <translation>最大恒星数：</translation>
+    </message>
+    <message>
+      <source>Calibrates the colour of the active view from Gaia XP star spectra, solving the sensor's response instead of assuming it. It needs a plate solution and offers to make one.</source>
+      <translation>根据 Gaia XP 恒星光谱校准活动视图的颜色，并求解传感器响应而不是假定它。需要天体测量解析结果，如果没有，会提示进行解析。</translation>
+    </message>
+    <message>
+      <source>Find the stars, look up their spectra, measure them, solve the system
+response and correct the colour of the active view, all in one go.</source>
+      <translation>查找恒星、检索其光谱并测量，求解系统
+响应并校正活动视图的颜色，一步完成。</translation>
+    </message>
+    <message>
+      <source>&lt;b&gt;Calibrated&lt;/b&gt; with {0} stars ({1} Gaia XP spectra, {2} Pickles templates) in {3:.1f} s.&lt;br&gt;{4} · B-V {5:.2f} – {6:.2f} · residual RMS {7:.4f} · session runs {8}&lt;br&gt;Gains: k_R={9:.4f}  k_G={10:.4f}  k_B={11:.4f} · {12}</source>
+      <translation>&lt;b&gt;已校准&lt;/b&gt;：使用 {0} 颗恒星（{1} 条 Gaia XP 光谱，{2} 个 Pickles 模板），用时 {3:.1f} 秒。&lt;br&gt;{4} · B-V {5:.2f} – {6:.2f} · 残差 RMS {7:.4f} · 会话运行次数 {8}&lt;br&gt;增益：k_R={9:.4f}  k_G={10:.4f}  k_B={11:.4f} · {12}</translation>
+    </message>
+    <message>
+      <source>
+ 
+&lt;h2&gt;What is SSSC?&lt;/h2&gt;
+&lt;p&gt;
+SSSC (Spectrophotometric Standard Star Calibration) is SetiAstro&amp;rsquo;s next-generation
+empirical color calibration, derived directly from the photometric calibration pipeline
+used internally by the Gaia space mission (Riello et al. 2021). The same mathematical
+framework that Gaia uses to self-calibrate a billion stars is applied here to calibrate
+your image &amp;mdash; using Gaia&amp;rsquo;s own XP stellar spectra as the reference standard.
+&lt;/p&gt;
+&lt;p&gt;
+Traditional calibration tools require a &lt;b&gt;sensor QE curve&lt;/b&gt; as input. The problem is
+that most published QE curves are promotional material &amp;mdash; measured at room temperature
+on a bare die, often representing a best-case sample rather than an independently-verified
+response for your specific sensor batch. They have no knowledge of your AR coating, your
+optical train, your atmosphere, or your electronics chain. The curve you apply is rarely
+the curve your camera actually has in practice.
+&lt;/p&gt;
+&lt;p&gt;
+&lt;b&gt;SSSC abandons the QE curve entirely.&lt;/b&gt; Instead, it solves for the true effective
+system throughput R(&amp;lambda;) directly from your image data, using Gaia XP stellar
+spectra as calibration references. No assumptions. No datasheets. Just your actual system,
+measured empirically from the stars in your field.
+&lt;/p&gt;
+ 
+&lt;hr&gt;
+ 
+&lt;h2&gt;How does it work?&lt;/h2&gt;
+&lt;p&gt;
+For each calibrator star, Gaia has measured a continuous flux spectrum from ~330&amp;ndash;1050&amp;nbsp;nm
+at ~2.5&amp;nbsp;nm resolution. SSSC integrates those spectra through your filter transmission
+curves and solves for the R(&amp;lambda;) that best explains the difference between what Gaia
+predicts and what your camera actually measured. The core equation is:
+&lt;/p&gt;
+&lt;p style="margin-left:20px; font-family:monospace; color:#88ffcc;"&gt;
+measured&lt;sub&gt;c&lt;/sub&gt;(i) = k&lt;sub&gt;c&lt;/sub&gt; &amp;times; &amp;int; flux&lt;sub&gt;i&lt;/sub&gt;(&amp;lambda;)
+&amp;times; T&lt;sub&gt;filter&lt;/sub&gt;(&amp;lambda;) &amp;times; R(&amp;lambda;) d&amp;lambda;
+&lt;/p&gt;
+&lt;p&gt;
+R(&amp;lambda;) absorbs everything the datasheet cannot tell you: true sensor QE at
+operating temperature, mirror and lens throughput, AR coating, field flattener,
+and atmospheric extinction. Filter transmission curves remain as inputs &amp;mdash;
+manufacturers publish reliable interferometric measurements for these.
+&lt;/p&gt;
+ 
+&lt;hr&gt;
+ 
+&lt;h2&gt;Bootstrap Stages&lt;/h2&gt;
+&lt;p&gt;
+The solution quality improves automatically as more calibrator stars are available.
+SSSC selects the highest stage your field supports:
+&lt;/p&gt;
+&lt;ul&gt;
+  &lt;li&gt;&lt;span class="stage"&gt;Stage 1 (&amp;lt;50 stars):&lt;/span&gt;
+      Scalar per-channel gains k&lt;sub&gt;R&lt;/sub&gt;, k&lt;sub&gt;G&lt;/sub&gt;, k&lt;sub&gt;B&lt;/sub&gt;.
+      This is equivalent to traditional scalar SPCC &amp;mdash; a single white-balance
+      correction per channel. Always runs as the baseline.&lt;/li&gt;
+  &lt;li&gt;&lt;span class="stage"&gt;Stage 2 (50&amp;ndash;200 stars):&lt;/span&gt;
+      Color-dependent gain within each band, fit as slope, affine, or quadratic
+      depending on which best describes your data. Captures the dominant wavelength
+      dependence within each filter passband. Comparable to SASpro&amp;rsquo;s polynomial
+      SPCC fit, which already exceeds traditional scalar SPCC quality on most normal
+      star fields &amp;mdash; and SSSC achieves this without any QE curve assumption at all.&lt;/li&gt;
+  &lt;li&gt;&lt;span class="stage"&gt;Stage 3 (200+ stars, B&amp;minus;V span &amp;ge; 1.5):&lt;/span&gt;
+      Full R(&amp;lambda;) shape solved per channel on piecewise-linear control points
+      by an exact least-squares fit. Hot blue stars constrain the blue edge of each filter;
+      cool red stars constrain the red edge. Each run&amp;rsquo;s solution is saved to the
+      session history, which the multi-night Stage 4 will combine.&lt;/li&gt;
+  &lt;li&gt;&lt;span class="stage future"&gt;Stage 4 (future &amp;mdash; DR4 + multi-night):&lt;/span&gt;
+      Atmosphere/hardware decorrelation. By imaging across multiple nights at different
+      airmasses, R(&amp;lambda;) separates into a stable hardware component and a variable
+      atmospheric component. Once converged, your empirically-measured QE curve is locked
+      in permanently &amp;mdash; calibration collapses back to Stage 2 speed with Stage 3+
+      accuracy, using your actual curve instead of a manufacturer guess.&lt;/li&gt;
+&lt;/ul&gt;
+ 
+&lt;hr&gt;
+ 
+&lt;h2&gt;What can SSSC do today with Gaia DR3?&lt;/h2&gt;
+&lt;p&gt;
+Gaia DR3 provides continuous XP spectra for stars to about G&amp;nbsp;&amp;le;&amp;nbsp;15.5.
+On a typical wide-field image (0.5&amp;ndash;2&amp;deg; FOV) this yields 200&amp;ndash;600
+calibrator stars, comfortably in Stage 3 territory for most fields.
+&lt;/p&gt;
+&lt;p&gt;
+In testing on real data, SSSC&amp;rsquo;s star colours match a full spectrophotometric
+standard to within 1&amp;ndash;2&amp;nbsp;% without any QE curve. The residual RMS of every
+stage that ran is shown in the Calibration Quality waterfall panel on every run.
+&lt;/p&gt;
+&lt;p class="note"&gt;
+Tip: run SSSC on images from the same rig across several nights. Each run&amp;rsquo;s
+R(&amp;lambda;) is saved to the session history, ready for the multi-night Stage 4.
+The Camera&amp;nbsp;/&amp;nbsp;Rig label field separates history per sensor so solutions
+don&amp;rsquo;t mix between different imaging trains.
+&lt;/p&gt;
+ 
+&lt;hr&gt;
+ 
+&lt;h2 class="future"&gt;What will SSSC do with Gaia DR4?&lt;/h2&gt;
+&lt;p&gt;
+Gaia DR4 is expected to extend XP spectra to G&amp;nbsp;&amp;le;&amp;nbsp;16.5, roughly
+&lt;b&gt;tripling the calibrator star count&lt;/b&gt; in most fields. This means:
+&lt;/p&gt;
+&lt;ul&gt;
+  &lt;li&gt;Fields that currently reach Stage 2 will reliably reach Stage 3&lt;/li&gt;
+  &lt;li&gt;Stage 3 with 16+ control points becomes well-constrained (&amp;gt;1000 stars)&lt;/li&gt;
+  &lt;li&gt;Stage 4 atmosphere decorrelation becomes feasible &amp;mdash; enough stars per
+      session to resolve the airmass-dependent component of R(&amp;lambda;)&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;
+The Stage 4 endgame: once your hardware R(&amp;lambda;) has converged from multi-night
+data, it is saved permanently to your session cache. Every subsequent calibration
+run loads that curve as a known input &amp;mdash; no solver needed, Stage 2 speed,
+empirically-correct accuracy. The curve also self-maintains: mirror oxidation,
+sensor aging, filter changes all appear as drift in R(&amp;lambda;) and trigger an update.
+&lt;/p&gt;
+ 
+&lt;hr&gt;
+ 
+&lt;h2&gt;References&lt;/h2&gt;
+&lt;ul&gt;
+  &lt;li&gt;Riello et al. 2021 &amp;mdash; &lt;i&gt;Gaia EDR3: Photometric content and validation&lt;/i&gt;,
+      A&amp;amp;A 649, A3 &amp;mdash; the calibration pipeline SSSC replicates&lt;/li&gt;
+  &lt;li&gt;Carrasco et al. 2021 &amp;mdash; &lt;i&gt;Gaia photometric science alerts programme&lt;/i&gt;&lt;/li&gt;
+  &lt;li&gt;Fabricius et al. 2021 &amp;mdash; &lt;i&gt;Gaia EDR3: Catalogue validation&lt;/i&gt;&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p class="note" style="margin-top:16px;"&gt;
+SSSC is part of SetiAstro Suite Pro &amp;mdash; www.setiastro.com
+&lt;/p&gt;
+</source>
+      <translation>
+ 
+&lt;h2&gt;什么是 SSSC？&lt;/h2&gt;
+&lt;p&gt;
+SSSC（光谱光度标准星校准）是 SetiAstro 的新一代
+经验色彩校准，直接源自 Gaia 空间任务内部使用的
+光度校准流程（Riello et al. 2021）。Gaia 用于自校准十亿颗恒星的
+同一数学框架在此被用于校准
+您的图像 &amp;mdash; 以 Gaia 自身的 XP 恒星光谱作为参考标准。
+&lt;/p&gt;
+&lt;p&gt;
+传统校准工具需要 &lt;b&gt;传感器 QE 曲线&lt;/b&gt; 作为输入。问题在于
+大多数公开的 QE 曲线都是宣传材料 &amp;mdash; 在室温下
+对裸芯片测量，往往代表最佳样品，而不是针对您这批传感器
+经过独立验证的响应。它们不了解您的增透膜、您的
+光学系统、您的大气或您的电子链路。您应用的曲线很少
+是您的相机实际具有的曲线。
+&lt;/p&gt;
+&lt;p&gt;
+&lt;b&gt;SSSC 完全抛弃了 QE 曲线。&lt;/b&gt; 它以 Gaia XP 恒星光谱作为校准参考，
+直接从您的图像数据中求解真实的有效系统通量 R(&amp;lambda;)。
+没有假设。没有数据手册。只有您的实际系统，
+根据视场中的恒星经验测得。
+&lt;/p&gt;
+ 
+&lt;hr&gt;
+ 
+&lt;h2&gt;它是如何工作的？&lt;/h2&gt;
+&lt;p&gt;
+对于每颗校准星，Gaia 都测量了 ~330&amp;ndash;1050&amp;nbsp;nm 的连续通量光谱，
+分辨率约 ~2.5&amp;nbsp;nm。SSSC 将这些光谱通过您的滤镜透过率
+曲线积分，并求解最能解释 Gaia 预测值与相机实际测量值之间差异的
+R(&amp;lambda;)。核心方程为：
+&lt;/p&gt;
+&lt;p style="margin-left:20px; font-family:monospace; color:#88ffcc;"&gt;
+measured&lt;sub&gt;c&lt;/sub&gt;(i) = k&lt;sub&gt;c&lt;/sub&gt; &amp;times; &amp;int; flux&lt;sub&gt;i&lt;/sub&gt;(&amp;lambda;)
+&amp;times; T&lt;sub&gt;filter&lt;/sub&gt;(&amp;lambda;) &amp;times; R(&amp;lambda;) d&amp;lambda;
+&lt;/p&gt;
+&lt;p&gt;
+R(&amp;lambda;) 吸收了数据手册无法告诉您的一切：工作温度下真实的传感器 QE、
+反射镜和透镜通量、增透膜、平场镜，
+以及大气消光。滤镜透过率曲线仍作为输入 &amp;mdash;
+制造商会为其公布可靠的干涉测量数据。
+&lt;/p&gt;
+ 
+&lt;hr&gt;
+ 
+&lt;h2&gt;自举阶段&lt;/h2&gt;
+&lt;p&gt;
+随着可用校准星增多，解的质量会自动提高。
+SSSC 会选择您的视场所能支持的最高阶段：
+&lt;/p&gt;
+&lt;ul&gt;
+  &lt;li&gt;&lt;span class="stage"&gt;阶段 1（&amp;lt;50 颗星）：&lt;/span&gt;
+      逐通道标量增益 k&lt;sub&gt;R&lt;/sub&gt;、k&lt;sub&gt;G&lt;/sub&gt;、k&lt;sub&gt;B&lt;/sub&gt;。
+      这相当于传统的标量 SPCC &amp;mdash; 每个通道一次白平衡
+      校正。始终作为基线运行。&lt;/li&gt;
+  &lt;li&gt;&lt;span class="stage"&gt;阶段 2（50&amp;ndash;200 颗星）：&lt;/span&gt;
+      每个波段内与颜色相关的增益，根据最能描述您数据的形式，
+      拟合为斜率、仿射或二次函数。捕获每个滤镜通带内
+      主要的波长依赖性。可与 SASpro 的多项式
+      SPCC 拟合相媲美，后者在大多数普通星场上已超过传统标量 SPCC 的质量
+      &amp;mdash; 而 SSSC 完全无需任何 QE 曲线假设即可做到这一点。&lt;/li&gt;
+  &lt;li&gt;&lt;span class="stage"&gt;阶段 3（200+ 颗星，B&amp;minus;V 跨度 &amp;ge; 1.5）：&lt;/span&gt;
+      通过精确的最小二乘拟合，在分段线性控制点上逐通道求解完整的 R(&amp;lambda;) 形状。炽热的蓝星约束每个滤镜的蓝端；较冷的红星约束红端。每次运行的解都会保存到会话历史中，多夜的阶段 4 将合并这些历史。&lt;/li&gt;
+  &lt;li&gt;&lt;span class="stage future"&gt;阶段 4（未来 &amp;mdash; DR4 + 多夜）：&lt;/span&gt;
+      大气/硬件去相关。通过在多个夜晚以不同
+      大气质量成像，R(&amp;lambda;) 可分离为稳定的硬件分量和可变的
+      大气分量。一旦收敛，您经验测得的 QE 曲线将被永久
+      锁定 &amp;mdash; 校准将回到阶段 2 的速度，同时具备阶段 3+ 的
+      精度，使用您的实际曲线而非制造商的估计。&lt;/li&gt;
+&lt;/ul&gt;
+ 
+&lt;hr&gt;
+ 
+&lt;h2&gt;SSSC 目前借助 Gaia DR3 能做什么？&lt;/h2&gt;
+&lt;p&gt;
+Gaia DR3 为约 G&amp;nbsp;&amp;le;&amp;nbsp;15.5 的恒星提供连续 XP 光谱。
+在典型的广域图像（0.5&amp;ndash;2&amp;deg; 视场）上，这可提供 200&amp;ndash;600 颗
+校准星，对大多数视场而言可轻松达到阶段 3。
+&lt;/p&gt;
+&lt;p&gt;
+在真实数据的测试中，SSSC 的恒星颜色在不使用任何 QE 曲线的情况下与完整的分光光度标准相差在 1&amp;ndash;2&amp;nbsp;% 以内。每次运行时，已运行的每个阶段的残差 RMS 都会显示在校准质量瀑布面板中。
+&lt;/p&gt;
+&lt;p class="note"&gt;
+提示：在多个夜晚用同一套设备拍摄的图像上运行 SSSC。每次运行的 R(&amp;lambda;) 都会保存到会话历史中，供多夜的阶段 4 使用。相机&amp;nbsp;/&amp;nbsp;设备标签字段会按传感器区分历史记录，因此不同成像系统之间的解不会混淆。
+&lt;/p&gt;
+ 
+&lt;hr&gt;
+ 
+&lt;h2 class="future"&gt;SSSC 借助 Gaia DR4 将能做什么？&lt;/h2&gt;
+&lt;p&gt;
+Gaia DR4 预计会将 XP 光谱扩展到 G&amp;nbsp;&amp;le;&amp;nbsp;16.5，在大多数视场中
+&lt;b&gt;校准星数量约增加至三倍&lt;/b&gt;。这意味着：
+&lt;/p&gt;
+&lt;ul&gt;
+  &lt;li&gt;目前达到阶段 2 的视场将可靠地达到阶段 3&lt;/li&gt;
+  &lt;li&gt;具有 16+ 个控制点的阶段 3 将得到良好约束（&amp;gt;1000 颗星）&lt;/li&gt;
+  &lt;li&gt;阶段 4 大气去相关变得可行 &amp;mdash; 每个会话有足够的恒星
+      来解析 R(&amp;lambda;) 中与大气质量相关的分量&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;
+阶段 4 的最终目标：一旦您的硬件 R(&amp;lambda;) 通过多夜数据收敛，
+它将被永久保存到您的会话缓存中。之后的每次校准
+运行都会将该曲线作为已知输入加载 &amp;mdash; 无需求解器，阶段 2 的速度，
+经验上正确的精度。该曲线还能自我维护：反射镜氧化、
+传感器老化、滤镜更换都会表现为 R(&amp;lambda;) 的漂移并触发更新。
+&lt;/p&gt;
+ 
+&lt;hr&gt;
+ 
+&lt;h2&gt;参考文献&lt;/h2&gt;
+&lt;ul&gt;
+  &lt;li&gt;Riello et al. 2021 &amp;mdash; &lt;i&gt;Gaia EDR3: Photometric content and validation&lt;/i&gt;,
+      A&amp;amp;A 649, A3 &amp;mdash; SSSC 所复现的校准流程&lt;/li&gt;
+  &lt;li&gt;Carrasco et al. 2021 &amp;mdash; &lt;i&gt;Gaia photometric science alerts programme&lt;/i&gt;&lt;/li&gt;
+  &lt;li&gt;Fabricius et al. 2021 &amp;mdash; &lt;i&gt;Gaia EDR3: Catalogue validation&lt;/i&gt;&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p class="note" style="margin-top:16px;"&gt;
+SSSC 是 SetiAstro Suite Pro 的一部分 &amp;mdash; www.setiastro.com
+&lt;/p&gt;
+</translation>
+    </message>
+    <message>
+      <source>  ✓ Stage 3 (full R(λ)) solved from {0} stars.
+  Saved to the session history of this filter+camera combination.</source>
+      <translation>  ✓ 阶段 3（完整 R(λ)）已由 {0} 颗星求解。
+  已保存到此滤镜+相机组合的会话历史中。</translation>
+    </message>
+    <message>
+      <source>The stars do not follow these filter curves well (scalar fit residual {0:.0%}). Check the filters chosen: an OSC camera behind a UV/IR cut needs the UV/IR-cut curves, or the cut filter as LP/Cut.</source>
+      <translation>恒星与这些滤镜曲线不太吻合（标量拟合残差 {0:.0%}）。请检查所选滤镜：位于 UV/IR 截止滤镜后的 OSC 相机需要 UV/IR 截止曲线，或将截止滤镜作为 LP/Cut。</translation>
+    </message>
+    <message>
+      <source>Calibrated ✓</source>
+      <translation>已校准 ✓</translation>
+    </message>
+    <message>
+      <source>Applied to this image. It turns back into Calibrate when you change a setting,
+switch to another image or undo.</source>
+      <translation>已应用于此图像。更改设置、切换到其他图像或撤销后，
+按钮会恢复为“校准”。</translation>
+    </message>
+    <message>
+      <source>Every calibration is saved under a session: the R/G/B filters, LP filters and
+camera / rig name together. Each run is solved on its own stars; the saved
+R(λ) curves and their uncertainties are the record the multi-night Stage 4
+will combine.</source>
+      <translation>每次校准都保存在一个会话下：R/G/B 滤镜、LP 滤镜和
+相机 / 设备名称共同决定会话。每次运行只用它自己的恒星求解；
+保存的 R(λ) 曲线及其不确定度，是多夜阶段 4
+将要合并的记录。</translation>
+    </message>
+    <message>
+      <source>View History…</source>
+      <translation>查看历史…</translation>
+    </message>
+    <message>
+      <source>Every saved run of this session and the others: the R(λ) curves Stage 3
+measured, the channel gains run by run, and deleting a single bad run</source>
+      <translation>此会话及其他会话的每次已保存运行：阶段 3 测得的 R(λ) 曲线、
+每次运行的通道增益，并可删除单次不良运行</translation>
+    </message>
+    <message>
+      <source>Session history unavailable: {0}</source>
+      <translation>会话历史不可用：{0}</translation>
+    </message>
+    <message>
+      <source>Session {0}</source>
+      <translation>会话 {0}</translation>
+    </message>
+    <message>
+      <source>Last: {0}  ·  Stage {1}  ·  {2} stars  ·  RMS {3}</source>
+      <translation>上次：{0}  ·  阶段 {1}  ·  {2} 颗星  ·  RMS {3}</translation>
+    </message>
+    <message>
+      <source>No runs yet: the first calibration starts this setup's history.</source>
+      <translation>尚无运行：第一次校准将开始此设备的历史。</translation>
+    </message>
+    <message>
+      <source>{0} other session(s) use these filters under a different camera name: see View History.</source>
+      <translation>另有 {0} 个会话以不同的相机名称使用这些滤镜：请查看“查看历史”。</translation>
+    </message>
+    <message>
+      <source>Name the camera / rig to keep each setup's history apart.</source>
+      <translation>为相机 / 设备命名，以便将每套设备的历史分开。</translation>
+    </message>
+    <message>
+      <source>1 run</source>
+      <translation>1 次运行</translation>
+    </message>
+    <message>
+      <source>{0} runs</source>
+      <translation>{0} 次运行</translation>
+    </message>
+    <message>
+      <source>nights unknown (no DATE-OBS)</source>
+      <translation>夜数未知（无 DATE-OBS）</translation>
+    </message>
+    <message>
+      <source>1 night</source>
+      <translation>1 夜</translation>
+    </message>
+    <message>
+      <source>{0} nights</source>
+      <translation>{0} 夜</translation>
+    </message>
+    <message>
+      <source>{0}, {1}  ·  best: Stage {2} from {3} stars</source>
+      <translation>{0}，{1}  ·  最佳：阶段 {2}，{3} 颗星</translation>
+    </message>
+    <message>
+      <source>LP: {0}</source>
+      <translation>LP：{0}</translation>
+    </message>
   </context>
   <context>
     <name>SSSCLoader</name>
@@ -58264,6 +59021,14 @@ Reload Scripts to see new ones.</source>
       <source>🖱️ &lt;b&gt;Click&lt;/b&gt;: show luminance &amp;nbsp;•&amp;nbsp; &lt;b&gt;Shift+Click&lt;/b&gt;: select that band &amp;nbsp;•&amp;nbsp; &lt;b&gt;Ctrl+Drag&lt;/b&gt;: pan &amp;nbsp;•&amp;nbsp; &lt;b&gt;Alt+Drag&lt;/b&gt;: draw region mask &amp;nbsp;•&amp;nbsp; &lt;b&gt;Wheel&lt;/b&gt;: zoom</source>
       <translation>🖱️ &lt;b&gt;单击&lt;/b&gt;：显示亮度 &amp;nbsp;•&amp;nbsp; &lt;b&gt;Shift+单击&lt;/b&gt;：选择该亮度带 &amp;nbsp;•&amp;nbsp; &lt;b&gt;Ctrl+拖动&lt;/b&gt;：平移 &amp;nbsp;•&amp;nbsp; &lt;b&gt;Alt+拖动&lt;/b&gt;：绘制区域蒙版 &amp;nbsp;•&amp;nbsp; &lt;b&gt;滚轮&lt;/b&gt;：缩放</translation>
     </message>
+    <message>
+      <source>Low:</source>
+      <translation>下限：</translation>
+    </message>
+    <message>
+      <source>High:</source>
+      <translation>上限：</translation>
+    </message>
   </context>
   <context>
     <name>SerStackerDialog</name>
@@ -58948,6 +59713,10 @@ Thank you for being part of this journey. Clear skies.</source>
     <message>
       <source>{0} of {1} recommended layers</source>
       <translation>{0} / {1} 个推荐层</translation>
+    </message>
+    <message>
+      <source>Close this window. Help &gt; Welcome and Setup opens it again.</source>
+      <translation>关闭此窗口。可通过 帮助 &gt; 欢迎与设置 再次打开。</translation>
     </message>
   </context>
   <context>
@@ -67426,6 +68195,14 @@ There's nothing to unwarp — the solution is already linear.</source>
       <source>WaveScale Dark Enhancer — Preset</source>
       <translation>WaveScale Dark Enhancer — 预设</translation>
     </message>
+    <message>
+      <source>Amount:</source>
+      <translation>强度：</translation>
+    </message>
+    <message>
+      <source>Blend with the original image: 100% is the full effect, 0% leaves it unchanged.</source>
+      <translation>与原始图像混合：100% 为完整效果，0% 保持图像不变。</translation>
+    </message>
   </context>
   <context>
     <name>WaveScaleDarkEnhancerDialogPro</name>
@@ -67532,6 +68309,22 @@ Drop directly on an image to apply them headlessly.</source>
     <message>
       <source>Zoom Out</source>
       <translation>缩小</translation>
+    </message>
+    <message>
+      <source>Amount:</source>
+      <translation>强度：</translation>
+    </message>
+    <message>
+      <source>Amount (0-100%)
+
+Blends the finished result with the original image. 100% is the full effect, 0% leaves the image unchanged.
+
+Changing it after a Preview re-blends the preview without recomputing. Default: 100%.</source>
+      <translation>强度 (0-100%)
+
+将最终结果与原始图像混合。100% 为完整效果，0% 保持图像不变。
+
+预览后再调整它，会直接重新混合预览，无需重新计算。默认值：100%。</translation>
     </message>
   </context>
   <context>
@@ -67668,6 +68461,22 @@ Higher -&gt; larger-scale structure enhanced. Default: 5.</source>
       <source>Zoom Out</source>
       <translation>缩小</translation>
     </message>
+    <message>
+      <source>Amount:</source>
+      <translation>强度：</translation>
+    </message>
+    <message>
+      <source>Amount (0-100%)
+
+Blends the finished result with the original image. 100% is the full effect, 0% leaves the image unchanged.
+
+Changing it after a Preview re-blends the preview without recomputing. Default: 100%.</source>
+      <translation>强度 (0-100%)
+
+将最终结果与原始图像混合。100% 为完整效果，0% 保持图像不变。
+
+预览后再调整它，会直接重新混合预览，无需重新计算。默认值：100%。</translation>
+    </message>
   </context>
   <context>
     <name>WaveScaleHDRPresetDialog</name>
@@ -67690,6 +68499,14 @@ Higher -&gt; larger-scale structure enhanced. Default: 5.</source>
     <message>
       <source>WaveScale HDR — Preset</source>
       <translation>WaveScale HDR — 预设</translation>
+    </message>
+    <message>
+      <source>Amount:</source>
+      <translation>强度：</translation>
+    </message>
+    <message>
+      <source>Blend with the original image: 100% is the full effect, 0% leaves it unchanged.</source>
+      <translation>与原始图像混合：100% 为完整效果，0% 保持图像不变。</translation>
     </message>
   </context>
   <context>
@@ -73984,6 +74801,113 @@ Drop directly on an image to apply them headlessly.</source>
 Drop it on an image to open {0} for that image.</source>
       <translation>拖到画布上以创建 {0} 快捷方式，或拖到基本工具以添加该工具。
 拖放到图像上即可为该图像打开 {0}。</translation>
+    </message>
+  </context>
+  <context>
+    <name>SSSCHistoryDialog</name>
+    <message>
+      <source>1 run</source>
+      <translation>1 次运行</translation>
+    </message>
+    <message>
+      <source>{0} runs</source>
+      <translation>{0} 次运行</translation>
+    </message>
+    <message>
+      <source>nights unknown (no DATE-OBS)</source>
+      <translation>夜数未知（无 DATE-OBS）</translation>
+    </message>
+    <message>
+      <source>1 night</source>
+      <translation>1 夜</translation>
+    </message>
+    <message>
+      <source>{0} nights</source>
+      <translation>{0} 夜</translation>
+    </message>
+    <message>
+      <source>{0}, {1}  ·  best: Stage {2} from {3} stars</source>
+      <translation>{0}，{1}  ·  最佳：阶段 {2}，{3} 颗星</translation>
+    </message>
+    <message>
+      <source>LP: {0}</source>
+      <translation>LP：{0}</translation>
+    </message>
+    <message>
+      <source>SSSC Session History</source>
+      <translation>SSSC 会话历史</translation>
+    </message>
+    <message>
+      <source>Session:</source>
+      <translation>会话：</translation>
+    </message>
+    <message>
+      <source>Date</source>
+      <translation>日期</translation>
+    </message>
+    <message>
+      <source>Image</source>
+      <translation>图像</translation>
+    </message>
+    <message>
+      <source>Stage</source>
+      <translation>阶段</translation>
+    </message>
+    <message>
+      <source>Stars</source>
+      <translation>星数</translation>
+    </message>
+    <message>
+      <source>B−V range</source>
+      <translation>B−V 范围</translation>
+    </message>
+    <message>
+      <source>RMS</source>
+      <translation>RMS</translation>
+    </message>
+    <message>
+      <source>White ref.</source>
+      <translation>白参考</translation>
+    </message>
+    <message>
+      <source>Airmass</source>
+      <translation>大气质量</translation>
+    </message>
+    <message>
+      <source>DATE-AVG / DATE-OBS from the image header, else when the run was calibrated</source>
+      <translation>取自图像头的 DATE-AVG / DATE-OBS，否则为该次运行的校准时间</translation>
+    </message>
+    <message>
+      <source>Delete Run</source>
+      <translation>删除运行</translation>
+    </message>
+    <message>
+      <source>Remove the selected run(s) from this session's history</source>
+      <translation>从此会话的历史中删除所选运行</translation>
+    </message>
+    <message>
+      <source>Close</source>
+      <translation>关闭</translation>
+    </message>
+    <message>
+      <source>(current settings)</source>
+      <translation>（当前设置）</translation>
+    </message>
+    <message>
+      <source>No runs saved for this session yet.</source>
+      <translation>此会话尚未保存任何运行。</translation>
+    </message>
+    <message>
+      <source>Select a run in the table first.</source>
+      <translation>请先在表格中选择一次运行。</translation>
+    </message>
+    <message>
+      <source>Delete {0} run(s) from this session's history? This cannot be undone.</source>
+      <translation>从此会话的历史中删除 {0} 次运行？此操作无法撤销。</translation>
+    </message>
+    <message>
+      <source>Error</source>
+      <translation>错误</translation>
     </message>
   </context>
 </TS>

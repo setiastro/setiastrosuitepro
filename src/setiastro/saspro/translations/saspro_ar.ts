@@ -4709,6 +4709,34 @@ Tools you added are taken off, the ones you removed come back, and the order is 
       <source>All Analysis Tools</source>
       <translation>جميع أدوات التحليل</translation>
     </message>
+    <message>
+      <source>Scripts &amp;&amp; &amp;Workflows</source>
+      <translation>نصوص برمجية وسير العمل(&amp;W)</translation>
+    </message>
+    <message>
+      <source>Help</source>
+      <translation>المساعدة</translation>
+    </message>
+    <message>
+      <source>Variable Stars &amp;&amp; Exoplanets...</source>
+      <translation>النجوم المتغيرة والكواكب الخارجية...</translation>
+    </message>
+    <message>
+      <source>Find variable stars and exoplanet transits in time-series subs</source>
+      <translation>العثور على النجوم المتغيرة وعبور الكواكب الخارجية في سلاسل زمنية من الإطارات</translation>
+    </message>
+    <message>
+      <source>Don't ask again unless there are unsaved images</source>
+      <translation>لا تسأل مرة أخرى إلا إذا كانت هناك صور غير محفوظة</translation>
+    </message>
+    <message>
+      <source>Preferences &gt; Always ask before exiting turns it back on.</source>
+      <translation>لإعادة تشغيله: التفضيلات &gt; اسأل دائمًا قبل الخروج.</translation>
+    </message>
+    <message>
+      <source>Never saved:</source>
+      <translation>لم تُحفظ قط:</translation>
+    </message>
   </context>
   <context>
     <name>AstrobinExportTab</name>
@@ -4722,7 +4750,7 @@ Tools you added are taken off, the ones you removed come back, and the order is 
     </message>
     <message>
       <source># Subs</source>
-      <translation># اشتراكات</translation>
+      <translation># إطارات</translation>
     </message>
     <message>
       <source>(e.g. 4408)</source>
@@ -11829,11 +11857,11 @@ Open the RAF directly, or embed RAW_PATH in the header, or place the RAW next to
     <name>ExoPlanetWindow</name>
     <message>
       <source>1: Load Raw Subs…</source>
-      <translation>1: تحميل الاشتراكات الخام...</translation>
+      <translation>1: تحميل الإطارات الخام...</translation>
     </message>
     <message>
       <source>1a: Calibrate &amp;&amp; Align Subs</source>
-      <translation>1a: معايرة ومحاذاة الاشتراكات</translation>
+      <translation>1a: معايرة ومحاذاة الإطارات</translation>
     </message>
     <message>
       <source>2: Measure &amp;&amp; Photometry</source>
@@ -11865,7 +11893,7 @@ Open the RAF directly, or embed RAW_PATH in the header, or place the RAW next to
     </message>
     <message>
       <source>Raw Subs</source>
-      <translation>الاشتراكات الخام</translation>
+      <translation>الإطارات الخام</translation>
     </message>
     <message>
       <source>
@@ -13662,6 +13690,118 @@ the border) or the frame doesn't cover it.</source>
     <message>
       <source>⚠️ Using approximate XISF WCS (star matching may be imprecise)</source>
       <translation>⚠️ استخدام WCS التقريبي من XISF (قد تكون مطابقة النجوم غير دقيقة)</translation>
+    </message>
+    <message>
+      <source>Variable Stars &amp; Exoplanets</source>
+      <translation>النجوم المتغيرة والكواكب الخارجية</translation>
+    </message>
+    <message>
+      <source>Calibrated Subs</source>
+      <translation>الإطارات المعايرة</translation>
+    </message>
+    <message>
+      <source>Load Frames</source>
+      <translation>تحميل الإطارات</translation>
+    </message>
+    <message>
+      <source>Frames already loaded: {0}
+New frames selected: {1}</source>
+      <translation>الإطارات المحمّلة مسبقًا: {0}
+الإطارات الجديدة المحددة: {1}</translation>
+    </message>
+    <message>
+      <source>Add</source>
+      <translation>إضافة</translation>
+    </message>
+    <message>
+      <source>Replace</source>
+      <translation>استبدال</translation>
+    </message>
+    <message>
+      <source>Select Calibrated Frames</source>
+      <translation>تحديد الإطارات المعايرة</translation>
+    </message>
+    <message>
+      <source>Fold at:</source>
+      <translation>الطي على:</translation>
+    </message>
+    <message>
+      <source>Lomb-Scargle peak</source>
+      <translation>قمة Lomb-Scargle</translation>
+    </message>
+    <message>
+      <source>2 × Lomb-Scargle peak</source>
+      <translation>2 × قمة Lomb-Scargle</translation>
+    </message>
+    <message>
+      <source>BLS period</source>
+      <translation>دورة BLS</translation>
+    </message>
+    <message>
+      <source>2 × BLS period</source>
+      <translation>2 × دورة BLS</translation>
+    </message>
+    <message>
+      <source>Custom</source>
+      <translation>مخصص</translation>
+    </message>
+    <message>
+      <source>Period:</source>
+      <translation>الدورة:</translation>
+    </message>
+    <message>
+      <source>Detrended</source>
+      <translation>بعد إزالة الاتجاه</translation>
+    </message>
+    <message>
+      <source>Phase (0 = minimum light)</source>
+      <translation>الطور (0 = أدنى سطوع)</translation>
+    </message>
+    <message>
+      <source>No usable points to fold.</source>
+      <translation>لا توجد نقاط صالحة للطي.</translation>
+    </message>
+    <message>
+      <source>data</source>
+      <translation>البيانات</translation>
+    </message>
+    <message>
+      <source>phase bins (0.02)</source>
+      <translation>صناديق الطور (0.02)</translation>
+    </message>
+    <message>
+      <source>{0} — folded at P = {1:.6f} d</source>
+      <translation>{0} — مطوي عند P = {1:.6f} d</translation>
+    </message>
+    <message>
+      <source>Variable Star Fold</source>
+      <translation>طي النجم المتغير</translation>
+    </message>
+    <message>
+      <source>Add the new frames to the loaded ones (another night, or another folder), or replace them?</source>
+      <translation>هل تريد إضافة الإطارات الجديدة إلى الإطارات المحمّلة (ليلة أخرى أو مجلد آخر) أم استبدالها؟</translation>
+    </message>
+    <message>
+      <source>Period to fold at.  Lomb-Scargle suits smooth variation (pulsating
+stars); BLS suits eclipses.  An EW binary's two minima put both at
+half its period: use the 2 × choices.  Type a period for Custom.</source>
+      <translation>الدورة المستخدمة للطي.  يناسب Lomb-Scargle التغير السلس (النجوم
+النابضة)، ويناسب BLS الكسوفات.  يضع الحدّان الأدنيان لثنائي EW كليهما عند
+نصف دورته: استخدم خيارات 2 ×.  اكتب دورة لخيار مخصص.</translation>
+    </message>
+    <message>
+      <source>Off: the differential flux before detrending, every night at its own
+level.  A trend fit can take part of a slow variation with it.
+On: the curve with the main window's Detrend applied, which also
+divides out the step at a meridian flip.</source>
+      <translation>إيقاف: التدفق التفاضلي قبل إزالة الاتجاه، وكل ليلة عند مستواها
+الخاص.  قد تزيل ملاءمة الاتجاه جزءًا من التغير البطيء.
+تشغيل: المنحنى مع إزالة الاتجاه من النافذة الرئيسية، والتي تقسم
+أيضًا القفزة عند انقلاب خط الزوال.</translation>
+    </message>
+    <message>
+      <source>P = {0:.6f} d ({1:.3f} h)   Minimum light JD {2:.5f} (UTC)   Binned amplitude {3:.3f} mag   {4:.1f} cycles covered</source>
+      <translation>P = {0:.6f} d ({1:.3f} h)   أدنى سطوع JD {2:.5f} (UTC)   سعة الصناديق {3:.3f} mag   الدورات المغطاة: {4:.1f}</translation>
     </message>
   </context>
   <context>
@@ -18827,6 +18967,14 @@ Ctrl + نقر &amp; سحب للتحريك.
       <source>🖱️ &lt;b&gt;Click&lt;/b&gt;: show hue  &amp;nbsp;•&amp;nbsp; &lt;b&gt;Shift+Click&lt;/b&gt;: select that color  &amp;nbsp;•&amp;nbsp; &lt;b&gt;Ctrl+Drag&lt;/b&gt;: pan  &amp;nbsp;•&amp;nbsp; &lt;b&gt;Alt+Drag&lt;/b&gt;: draw region mask  &amp;nbsp;•&amp;nbsp; &lt;b&gt;Wheel&lt;/b&gt;: zoom</source>
       <translation>🖱️ &lt;b&gt;نقر&lt;/b&gt;: إظهار التدرج اللوني  &amp;nbsp;•&amp;nbsp; &lt;b&gt;Shift+نقر&lt;/b&gt;: تحديد ذلك اللون  &amp;nbsp;•&amp;nbsp; &lt;b&gt;Ctrl+سحب&lt;/b&gt;: تحريك  &amp;nbsp;•&amp;nbsp; &lt;b&gt;Alt+سحب&lt;/b&gt;: رسم قناع منطقة  &amp;nbsp;•&amp;nbsp; &lt;b&gt;العجلة&lt;/b&gt;: تكبير/تصغير</translation>
     </message>
+    <message>
+      <source>Chromaticity</source>
+      <translation>اللونية</translation>
+    </message>
+    <message>
+      <source>Lightness</source>
+      <translation>الإضاءة</translation>
+    </message>
   </context>
   <context>
     <name>SettingsDialog</name>
@@ -19881,6 +20029,22 @@ Please restart SASpro to activate GPU acceleration.</source>
     <message>
       <source>System</source>
       <translation>النظام</translation>
+    </message>
+    <message>
+      <source>This is already being installed by the setup window. Help &gt; Welcome and Setup shows its progress.</source>
+      <translation>يجري تثبيت هذا بالفعل من نافذة الإعداد. يُظهر المساعدة &gt; الترحيب والإعداد تقدمه.</translation>
+    </message>
+    <message>
+      <source>Always ask before exiting</source>
+      <translation>اسأل دائمًا قبل الخروج</translation>
+    </message>
+    <message>
+      <source>Checked, SASpro asks before it closes.
+Unchecked, it only asks when an image has unsaved edits or was
+never saved, or an install or download is still running.</source>
+      <translation>عند التحديد، يسأل SASpro قبل الإغلاق.
+عند إلغاء التحديد، لا يسأل إلا إذا كانت في صورة تعديلات غير محفوظة أو لم تُحفظ أبدًا،
+أو كان تثبيت أو تنزيل لا يزال جاريًا.</translation>
     </message>
   </context>
   <context>
@@ -29420,6 +29584,57 @@ Kept: the stacking folder and other paths, the loaded frames, the masters and th
 
 يُحتفظ بما يلي: مجلد التكديس والمسارات الأخرى، والإطارات المحمّلة، والإطارات الرئيسية واختيارات Dark/Flat الخاصة بها، ومجموعات المحاذاة والإطارات المرجعية، وملفاتك الشخصية المحفوظة، وما قاسه «تحسين…». ويُحتفظ بتفاوت التجميع ما دامت الإطارات مجمّعة وفقه.</translation>
     </message>
+    <message>
+      <source>New master after a gap of:</source>
+      <translation>Master جديد بعد فجوة قدرها:</translation>
+    </message>
+    <message>
+      <source> days</source>
+      <translation> يومًا</translation>
+    </message>
+    <message>
+      <source>every night</source>
+      <translation>كل ليلة</translation>
+    </message>
+    <message>
+      <source>Darks with the same exposure, temperature, gain and offset make one master
+until there is a gap of more than this many days between the nights they
+were shot. A dark library shot over a few nights stays one master; darks
+from other months or years become separate masters, and each light uses
+the master nearest its own date.
+Every night: one master per night. Darks with no date combine as before.</source>
+      <translation>تُكوِّن إطارات Dark ذات التعرض ودرجة الحرارة والكسب والإزاحة نفسها Master واحدًا
+إلى أن تفصل بين ليالي تصويرها فجوة تزيد على هذا العدد من الأيام.
+تبقى مكتبة Dark المصوَّرة على مدى بضع ليالٍ Master واحدًا، وتصبح إطارات Dark
+من أشهر أو سنوات أخرى Masters منفصلة، ويستخدم كل Light الـ Master الأقرب إلى تاريخه.
+كل ليلة: Master واحد لكل ليلة. تُدمَج إطارات Dark بلا تاريخ كما من قبل.</translation>
+    </message>
+    <message>
+      <source>Shared session-detection toggle (also affects Lights and Flats).
+Darks don't use sessions: they combine by exposure, image size,
+temperature, gain and offset, and split only by 'New master after
+a gap of', so this setting does not change how darks are combined.</source>
+      <translation>مفتاح مشترك لاكتشاف الجلسة (يؤثر أيضًا في Lights وFlats).
+لا تستخدم إطارات Dark الجلسات: تُدمَج حسب التعرض وحجم الصورة ودرجة الحرارة
+والكسب والإزاحة، ولا تُفصل إلا بخيار «Master جديد بعد فجوة قدرها»،
+لذا لا يغيّر هذا الإعداد طريقة دمج إطارات Dark.</translation>
+    </message>
+    <message>
+      <source>⚠ darks from {0}, {1} days from these frames</source>
+      <translation>⚠ إطارات Dark من {0}، على بعد {1} يومًا من هذه الإطارات</translation>
+    </message>
+    <message>
+      <source>Auto picks by size, then gain, exposure, date and temperature. Each flat group's Dark row shows its pick: choose another master, or None, there.</source>
+      <translation>يختار التلقائي حسب الحجم، ثم الكسب والتعرض والتاريخ ودرجة الحرارة. يعرض صف Dark في كل مجموعة Flat اختياره: اختر هناك Master آخر، أو لا شيء.</translation>
+    </message>
+    <message>
+      <source>Auto picks by size, then gain, exposure, date and temperature. Pick another master, or None, for this group only. Right-click frames to give them their own.</source>
+      <translation>يختار التلقائي حسب الحجم، ثم الكسب والتعرض والتاريخ ودرجة الحرارة. اختر Master آخر، أو لا شيء، لهذه المجموعة فقط. انقر بزر الماوس الأيمن على الإطارات لمنحها ملفًا خاصًا بها.</translation>
+    </message>
+    <message>
+      <source>Auto picks by size, then gain, exposure, date and temperature. Pick another master, or None, for this group only.</source>
+      <translation>يختار التلقائي حسب الحجم، ثم الكسب والتعرض والتاريخ ودرجة الحرارة. اختر Master آخر، أو لا شيء، لهذه المجموعة فقط.</translation>
+    </message>
   </context>
   <context>
     <name>StarSpikesDialogPro</name>
@@ -32429,6 +32644,14 @@ Open images, tool settings, presets and shortcuts are not changed.</source>
     <message>
       <source>analyze dither offsets from a set of frames or a completed stack run</source>
       <translation>تحليل إزاحات dither من مجموعة إطارات أو من تشغيل تكديس مكتمل</translation>
+    </message>
+    <message>
+      <source>Variable Stars &amp;&amp; Exoplanets...</source>
+      <translation>النجوم المتغيرة والكواكب الخارجية...</translation>
+    </message>
+    <message>
+      <source>Find variable stars and exoplanet transits in time-series subs</source>
+      <translation>العثور على النجوم المتغيرة وعبور الكواكب الخارجية في سلاسل زمنية من الإطارات</translation>
     </message>
   </context>
   <context>
@@ -40853,6 +41076,46 @@ Display and export tagging will fall back to sRGB until the profile is installed
 
 سيرجع العرض ووسم التصدير إلى sRGB حتى يُثبَّت ملف التعريف.</translation>
     </message>
+    <message>
+      <source>FITS options</source>
+      <translation>خيارات FITS</translation>
+    </message>
+    <message>
+      <source>Same as source file</source>
+      <translation>مثل الملف المصدر</translation>
+    </message>
+    <message>
+      <source>Same as source file (bottom-up)</source>
+      <translation>مثل الملف المصدر (من الأسفل إلى الأعلى)</translation>
+    </message>
+    <message>
+      <source>Same as source file (top-down)</source>
+      <translation>مثل الملف المصدر (من الأعلى إلى الأسفل)</translation>
+    </message>
+    <message>
+      <source>Top-down</source>
+      <translation>من الأعلى إلى الأسفل</translation>
+    </message>
+    <message>
+      <source>Bottom-up</source>
+      <translation>من الأسفل إلى الأعلى</translation>
+    </message>
+    <message>
+      <source>The order the image rows are stored in. SASpro and PixInsight read both,
+using the ROWORDER keyword. Siril shows top-down files upside down, so
+use Bottom-up for files going to Siril.
+Same as source file: bottom-up when the image came from a bottom-up
+FITS (Siril's own files), top-down otherwise.</source>
+      <translation>الترتيب الذي تُخزَّن به صفوف الصورة. يقرأ SASpro وPixInsight كليهما
+عبر الكلمة المفتاحية ROWORDER. يعرض Siril الملفات المخزنة من الأعلى إلى الأسفل مقلوبة،
+لذا استخدم «من الأسفل إلى الأعلى» للملفات المتجهة إلى Siril.
+مثل الملف المصدر: من الأسفل إلى الأعلى إذا جاءت الصورة من ملف FITS مخزن من الأسفل إلى الأعلى
+(ملفات Siril نفسها)، ومن الأعلى إلى الأسفل في غير ذلك.</translation>
+    </message>
+    <message>
+      <source>Row order</source>
+      <translation>ترتيب الصفوف</translation>
+    </message>
   </context>
   <context>
     <name>FXDialog</name>
@@ -41975,6 +42238,14 @@ Drawn chart: a vector star chart (SVG / PDF / PNG / new image).</source>
       <source>💡 The Icon Cheat Sheet under View → Shortcuts shows every toolbar icon with its function at a glance.</source>
       <translation>💡 تعرض الورقة المرجعية للأيقونات ضمن عرض → اختصارات كل أيقونة في شريط الأدوات مع وظيفتها بلمحة.</translation>
     </message>
+    <message>
+      <source>💡 Bored? Check under the Help menu. You're welcome. 🙂</source>
+      <translation>💡 تشعر بالملل؟ ألقِ نظرة في قائمة 'المساعدة'. على الرحب والسعة. 🙂</translation>
+    </message>
+    <message>
+      <source>💡 Press F1 (Help → Documentation) to browse and search every SASpro help page.</source>
+      <translation>💡 اضغط F1 (المساعدة → الوثائق) لتصفح كل صفحات مساعدة SASpro والبحث فيها.</translation>
+    </message>
   </context>
   <context>
     <name>FirstStepsTour</name>
@@ -42141,6 +42412,14 @@ Crop is under Functions → Repair &amp; Retouch → Crop. Drag the box inside t
     <message>
       <source>First Steps</source>
       <translation>الخطوات الأولى</translation>
+    </message>
+    <message>
+      <source>Ctrl+Z undoes any step, and Edit → History Explorer lists them all.
+
+A full workflow removes gradients and calibrates colour before stretching. The beginner tutorial walks through it.</source>
+      <translation>يتراجع Ctrl+Z عن أي خطوة، ويسرد تحرير → مستكشف التاريخ جميع الخطوات.
+
+سير العمل الكامل يزيل التدرجات ويعاير الألوان قبل التمديد. ويشرح الدرس التعليمي للمبتدئين ذلك خطوة بخطوة.</translation>
     </message>
   </context>
   <context>
@@ -43934,6 +44213,10 @@ Drop directly on an image to apply them headlessly.</source>
     <message>
       <source>Workflow Assistant</source>
       <translation>مساعد سير العمل</translation>
+    </message>
+    <message>
+      <source>Variable Stars &amp; Exoplanets</source>
+      <translation>النجوم المتغيرة والكواكب الخارجية</translation>
     </message>
   </context>
   <context>
@@ -56931,6 +57214,84 @@ If the result looks overcorrected, try 'poly2' instead of '{7}'.</source>
       <source>WCS Error</source>
       <translation>خطأ WCS</translation>
     </message>
+    <message>
+      <source>Optical Chain</source>
+      <translation>السلسلة البصرية</translation>
+    </message>
+    <message>
+      <source>Options</source>
+      <translation>خيارات</translation>
+    </message>
+    <message>
+      <source>Calibrate</source>
+      <translation>معايرة</translation>
+    </message>
+    <message>
+      <source>Light-pollution or UV/IR-cut filters in the light path, if any.</source>
+      <translation>مرشحات التلوث الضوئي أو قطع الأشعة فوق البنفسجية/تحت الحمراء في مسار الضوء، إن وجدت.</translation>
+    </message>
+    <message>
+      <source>Also make the sky background neutral grey after calibrating.</source>
+      <translation>اجعل خلفية السماء رمادية محايدة أيضًا بعد المعايرة.</translation>
+    </message>
+    <message>
+      <source>The camera's sensor (its QE curve).</source>
+      <translation>مستشعر الكاميرا (منحنى QE الخاص به).</translation>
+    </message>
+    <message>
+      <source>Plot the filter, sensor and star curves against each other.</source>
+      <translation>ارسم منحنيات المرشحات والمستشعر والنجوم معًا.</translation>
+    </message>
+    <message>
+      <source>The star that should come out white. G2V (the Sun) is the usual choice;
+an average spiral galaxy is close to it.</source>
+      <translation>النجم الذي يجب أن يظهر أبيض. G2V (الشمس) هو الخيار المعتاد؛
+والمجرة الحلزونية المتوسطة قريبة منه.</translation>
+    </message>
+    <message>
+      <source>Calibrates the colour of the active view from the spectra of the stars in it. It needs a plate solution and offers to make one.</source>
+      <translation>يعاير ألوان العرض النشط من أطياف النجوم الموجودة فيه. يحتاج إلى حل لوحة، ويعرض إجراءه إن لم يوجد.</translation>
+    </message>
+    <message>
+      <source>Find the stars, look up their spectra, measure them and correct the colour
+of the active view, all in one go.</source>
+      <translation>ابحث عن النجوم واستخرج أطيافها وقِسها وصحّح ألوان
+العرض النشط، كل ذلك دفعة واحدة.</translation>
+    </message>
+    <message>
+      <source>&lt;b&gt;Calibrated&lt;/b&gt; with {0} stars ({1} Gaia XP spectra, {2} Pickles templates) in {3:.1f} s.&lt;br&gt;Model: {4} · R ratio @ x=1: {5:.4f} · B ratio @ x=1: {6:.4f}</source>
+      <translation>&lt;b&gt;تمت المعايرة&lt;/b&gt; باستخدام {0} نجم ({1} أطياف Gaia XP، {2} قوالب Pickles) في {3:.1f} ث.&lt;br&gt;النموذج: {4} · نسبة R @ x=1: {5:.4f} · نسبة B @ x=1: {6:.4f}</translation>
+    </message>
+    <message>
+      <source>No Image</source>
+      <translation>لا توجد صورة</translation>
+    </message>
+    <message>
+      <source>Open an image and make it the active view first.</source>
+      <translation>افتح صورة واجعلها العرض النشط أولًا.</translation>
+    </message>
+    <message>
+      <source>This image isn't plate-solved yet. Run the plate solver now?</source>
+      <translation>لم يتم حل لوحة هذه الصورة بعد. هل تريد تشغيل حلّال اللوحة الآن؟</translation>
+    </message>
+    <message>
+      <source>Plate Solve Error</source>
+      <translation>خطأ في حل اللوحة</translation>
+    </message>
+    <message>
+      <source>Plate Solve Failed</source>
+      <translation>فشل حل اللوحة</translation>
+    </message>
+    <message>
+      <source>Calibrated ✓</source>
+      <translation>تمت المعايرة ✓</translation>
+    </message>
+    <message>
+      <source>Applied to this image. It turns back into Calibrate when you change a setting,
+switch to another image or undo.</source>
+      <translation>طُبّقت على هذه الصورة. يعود الزر إلى «معايرة» عند تغيير أي إعداد
+أو الانتقال إلى صورة أخرى أو التراجع.</translation>
+    </message>
   </context>
   <context>
     <name>SLaPToolkit</name>
@@ -58333,6 +58694,402 @@ Stars are selected brightest-first, XP stars prioritized.
       <source>🔬  Step 2: Run SSSC Calibration</source>
       <translation>🔬  الخطوة 2: تشغيل معايرة SSSC</translation>
     </message>
+    <message>
+      <source>Optical Chain</source>
+      <translation>السلسلة البصرية</translation>
+    </message>
+    <message>
+      <source>Options</source>
+      <translation>خيارات</translation>
+    </message>
+    <message>
+      <source>Calibrate</source>
+      <translation>معايرة</translation>
+    </message>
+    <message>
+      <source>Light-pollution or UV/IR-cut filters in the light path, if any.</source>
+      <translation>مرشحات التلوث الضوئي أو قطع الأشعة فوق البنفسجية/تحت الحمراء في مسار الضوء، إن وجدت.</translation>
+    </message>
+    <message>
+      <source>Also make the sky background neutral grey after calibrating.</source>
+      <translation>اجعل خلفية السماء رمادية محايدة أيضًا بعد المعايرة.</translation>
+    </message>
+    <message>
+      <source>The star that should come out white. G2V (the Sun) is the usual choice.</source>
+      <translation>النجم الذي يجب أن يظهر أبيض. G2V (الشمس) هو الخيار المعتاد.</translation>
+    </message>
+    <message>
+      <source>No sensor curve: SSSC solves the sensor's response from the stars.</source>
+      <translation>لا حاجة إلى منحنى المستشعر: يحسب SSSC استجابة المستشعر من النجوم.</translation>
+    </message>
+    <message>
+      <source>Session History</source>
+      <translation>سجل الجلسات</translation>
+    </message>
+    <message>
+      <source>Max stars:</source>
+      <translation>أقصى عدد للنجوم:</translation>
+    </message>
+    <message>
+      <source>Calibrates the colour of the active view from Gaia XP star spectra, solving the sensor's response instead of assuming it. It needs a plate solution and offers to make one.</source>
+      <translation>يعاير ألوان العرض النشط من أطياف نجوم Gaia XP، ويحسب استجابة المستشعر بدلًا من افتراضها. يحتاج إلى حل لوحة، ويعرض إجراءه إن لم يوجد.</translation>
+    </message>
+    <message>
+      <source>Find the stars, look up their spectra, measure them, solve the system
+response and correct the colour of the active view, all in one go.</source>
+      <translation>ابحث عن النجوم واستخرج أطيافها وقِسها واحسب استجابة
+النظام وصحّح ألوان العرض النشط، كل ذلك دفعة واحدة.</translation>
+    </message>
+    <message>
+      <source>&lt;b&gt;Calibrated&lt;/b&gt; with {0} stars ({1} Gaia XP spectra, {2} Pickles templates) in {3:.1f} s.&lt;br&gt;{4} · B-V {5:.2f} – {6:.2f} · residual RMS {7:.4f} · session runs {8}&lt;br&gt;Gains: k_R={9:.4f}  k_G={10:.4f}  k_B={11:.4f} · {12}</source>
+      <translation>&lt;b&gt;تمت المعايرة&lt;/b&gt; باستخدام {0} نجم ({1} أطياف Gaia XP، {2} قوالب Pickles) في {3:.1f} ث.&lt;br&gt;{4} · B-V {5:.2f} – {6:.2f} · RMS المتبقي {7:.4f} · مرات تشغيل الجلسة {8}&lt;br&gt;معاملات الكسب: k_R={9:.4f}  k_G={10:.4f}  k_B={11:.4f} · {12}</translation>
+    </message>
+    <message>
+      <source>
+ 
+&lt;h2&gt;What is SSSC?&lt;/h2&gt;
+&lt;p&gt;
+SSSC (Spectrophotometric Standard Star Calibration) is SetiAstro&amp;rsquo;s next-generation
+empirical color calibration, derived directly from the photometric calibration pipeline
+used internally by the Gaia space mission (Riello et al. 2021). The same mathematical
+framework that Gaia uses to self-calibrate a billion stars is applied here to calibrate
+your image &amp;mdash; using Gaia&amp;rsquo;s own XP stellar spectra as the reference standard.
+&lt;/p&gt;
+&lt;p&gt;
+Traditional calibration tools require a &lt;b&gt;sensor QE curve&lt;/b&gt; as input. The problem is
+that most published QE curves are promotional material &amp;mdash; measured at room temperature
+on a bare die, often representing a best-case sample rather than an independently-verified
+response for your specific sensor batch. They have no knowledge of your AR coating, your
+optical train, your atmosphere, or your electronics chain. The curve you apply is rarely
+the curve your camera actually has in practice.
+&lt;/p&gt;
+&lt;p&gt;
+&lt;b&gt;SSSC abandons the QE curve entirely.&lt;/b&gt; Instead, it solves for the true effective
+system throughput R(&amp;lambda;) directly from your image data, using Gaia XP stellar
+spectra as calibration references. No assumptions. No datasheets. Just your actual system,
+measured empirically from the stars in your field.
+&lt;/p&gt;
+ 
+&lt;hr&gt;
+ 
+&lt;h2&gt;How does it work?&lt;/h2&gt;
+&lt;p&gt;
+For each calibrator star, Gaia has measured a continuous flux spectrum from ~330&amp;ndash;1050&amp;nbsp;nm
+at ~2.5&amp;nbsp;nm resolution. SSSC integrates those spectra through your filter transmission
+curves and solves for the R(&amp;lambda;) that best explains the difference between what Gaia
+predicts and what your camera actually measured. The core equation is:
+&lt;/p&gt;
+&lt;p style="margin-left:20px; font-family:monospace; color:#88ffcc;"&gt;
+measured&lt;sub&gt;c&lt;/sub&gt;(i) = k&lt;sub&gt;c&lt;/sub&gt; &amp;times; &amp;int; flux&lt;sub&gt;i&lt;/sub&gt;(&amp;lambda;)
+&amp;times; T&lt;sub&gt;filter&lt;/sub&gt;(&amp;lambda;) &amp;times; R(&amp;lambda;) d&amp;lambda;
+&lt;/p&gt;
+&lt;p&gt;
+R(&amp;lambda;) absorbs everything the datasheet cannot tell you: true sensor QE at
+operating temperature, mirror and lens throughput, AR coating, field flattener,
+and atmospheric extinction. Filter transmission curves remain as inputs &amp;mdash;
+manufacturers publish reliable interferometric measurements for these.
+&lt;/p&gt;
+ 
+&lt;hr&gt;
+ 
+&lt;h2&gt;Bootstrap Stages&lt;/h2&gt;
+&lt;p&gt;
+The solution quality improves automatically as more calibrator stars are available.
+SSSC selects the highest stage your field supports:
+&lt;/p&gt;
+&lt;ul&gt;
+  &lt;li&gt;&lt;span class="stage"&gt;Stage 1 (&amp;lt;50 stars):&lt;/span&gt;
+      Scalar per-channel gains k&lt;sub&gt;R&lt;/sub&gt;, k&lt;sub&gt;G&lt;/sub&gt;, k&lt;sub&gt;B&lt;/sub&gt;.
+      This is equivalent to traditional scalar SPCC &amp;mdash; a single white-balance
+      correction per channel. Always runs as the baseline.&lt;/li&gt;
+  &lt;li&gt;&lt;span class="stage"&gt;Stage 2 (50&amp;ndash;200 stars):&lt;/span&gt;
+      Color-dependent gain within each band, fit as slope, affine, or quadratic
+      depending on which best describes your data. Captures the dominant wavelength
+      dependence within each filter passband. Comparable to SASpro&amp;rsquo;s polynomial
+      SPCC fit, which already exceeds traditional scalar SPCC quality on most normal
+      star fields &amp;mdash; and SSSC achieves this without any QE curve assumption at all.&lt;/li&gt;
+  &lt;li&gt;&lt;span class="stage"&gt;Stage 3 (200+ stars, B&amp;minus;V span &amp;ge; 1.5):&lt;/span&gt;
+      Full R(&amp;lambda;) shape solved per channel on piecewise-linear control points
+      by an exact least-squares fit. Hot blue stars constrain the blue edge of each filter;
+      cool red stars constrain the red edge. Each run&amp;rsquo;s solution is saved to the
+      session history, which the multi-night Stage 4 will combine.&lt;/li&gt;
+  &lt;li&gt;&lt;span class="stage future"&gt;Stage 4 (future &amp;mdash; DR4 + multi-night):&lt;/span&gt;
+      Atmosphere/hardware decorrelation. By imaging across multiple nights at different
+      airmasses, R(&amp;lambda;) separates into a stable hardware component and a variable
+      atmospheric component. Once converged, your empirically-measured QE curve is locked
+      in permanently &amp;mdash; calibration collapses back to Stage 2 speed with Stage 3+
+      accuracy, using your actual curve instead of a manufacturer guess.&lt;/li&gt;
+&lt;/ul&gt;
+ 
+&lt;hr&gt;
+ 
+&lt;h2&gt;What can SSSC do today with Gaia DR3?&lt;/h2&gt;
+&lt;p&gt;
+Gaia DR3 provides continuous XP spectra for stars to about G&amp;nbsp;&amp;le;&amp;nbsp;15.5.
+On a typical wide-field image (0.5&amp;ndash;2&amp;deg; FOV) this yields 200&amp;ndash;600
+calibrator stars, comfortably in Stage 3 territory for most fields.
+&lt;/p&gt;
+&lt;p&gt;
+In testing on real data, SSSC&amp;rsquo;s star colours match a full spectrophotometric
+standard to within 1&amp;ndash;2&amp;nbsp;% without any QE curve. The residual RMS of every
+stage that ran is shown in the Calibration Quality waterfall panel on every run.
+&lt;/p&gt;
+&lt;p class="note"&gt;
+Tip: run SSSC on images from the same rig across several nights. Each run&amp;rsquo;s
+R(&amp;lambda;) is saved to the session history, ready for the multi-night Stage 4.
+The Camera&amp;nbsp;/&amp;nbsp;Rig label field separates history per sensor so solutions
+don&amp;rsquo;t mix between different imaging trains.
+&lt;/p&gt;
+ 
+&lt;hr&gt;
+ 
+&lt;h2 class="future"&gt;What will SSSC do with Gaia DR4?&lt;/h2&gt;
+&lt;p&gt;
+Gaia DR4 is expected to extend XP spectra to G&amp;nbsp;&amp;le;&amp;nbsp;16.5, roughly
+&lt;b&gt;tripling the calibrator star count&lt;/b&gt; in most fields. This means:
+&lt;/p&gt;
+&lt;ul&gt;
+  &lt;li&gt;Fields that currently reach Stage 2 will reliably reach Stage 3&lt;/li&gt;
+  &lt;li&gt;Stage 3 with 16+ control points becomes well-constrained (&amp;gt;1000 stars)&lt;/li&gt;
+  &lt;li&gt;Stage 4 atmosphere decorrelation becomes feasible &amp;mdash; enough stars per
+      session to resolve the airmass-dependent component of R(&amp;lambda;)&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;
+The Stage 4 endgame: once your hardware R(&amp;lambda;) has converged from multi-night
+data, it is saved permanently to your session cache. Every subsequent calibration
+run loads that curve as a known input &amp;mdash; no solver needed, Stage 2 speed,
+empirically-correct accuracy. The curve also self-maintains: mirror oxidation,
+sensor aging, filter changes all appear as drift in R(&amp;lambda;) and trigger an update.
+&lt;/p&gt;
+ 
+&lt;hr&gt;
+ 
+&lt;h2&gt;References&lt;/h2&gt;
+&lt;ul&gt;
+  &lt;li&gt;Riello et al. 2021 &amp;mdash; &lt;i&gt;Gaia EDR3: Photometric content and validation&lt;/i&gt;,
+      A&amp;amp;A 649, A3 &amp;mdash; the calibration pipeline SSSC replicates&lt;/li&gt;
+  &lt;li&gt;Carrasco et al. 2021 &amp;mdash; &lt;i&gt;Gaia photometric science alerts programme&lt;/i&gt;&lt;/li&gt;
+  &lt;li&gt;Fabricius et al. 2021 &amp;mdash; &lt;i&gt;Gaia EDR3: Catalogue validation&lt;/i&gt;&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p class="note" style="margin-top:16px;"&gt;
+SSSC is part of SetiAstro Suite Pro &amp;mdash; www.setiastro.com
+&lt;/p&gt;
+</source>
+      <translation>
+ 
+&lt;h2&gt;ما هي SSSC؟&lt;/h2&gt;
+&lt;p&gt;
+SSSC (معايرة النجوم القياسية الطيفية الضوئية) هي معايرة الألوان التجريبية من الجيل التالي
+من SetiAstro، مشتقة مباشرة من خط معالجة المعايرة الضوئية
+المستخدم داخليًا في مهمة Gaia الفضائية (Riello et al. 2021). يُطبَّق هنا نفس الإطار
+الرياضي الذي تستخدمه Gaia للمعايرة الذاتية لمليار نجم لمعايرة
+صورتك &amp;mdash; باستخدام أطياف XP النجمية الخاصة بـ Gaia كمعيار مرجعي.
+&lt;/p&gt;
+&lt;p&gt;
+تتطلب أدوات المعايرة التقليدية &lt;b&gt;منحنى QE للمستشعر&lt;/b&gt; كمدخل. المشكلة هي
+أن معظم منحنيات QE المنشورة مواد ترويجية &amp;mdash; مقاسة في درجة حرارة الغرفة
+على شريحة مكشوفة، وغالبًا ما تمثل عينة في أفضل الأحوال بدلًا من استجابة متحقق منها بشكل مستقل
+لدفعة المستشعر الخاصة بك. ولا تعرف شيئًا عن طلاء AR لديك، أو
+قطارك البصري، أو غلافك الجوي، أو سلسلتك الإلكترونية. نادرًا ما يكون المنحنى الذي تطبقه
+هو المنحنى الذي تملكه كاميرتك فعليًا في الممارسة.
+&lt;/p&gt;
+&lt;p&gt;
+&lt;b&gt;تتخلى SSSC عن منحنى QE كليًا.&lt;/b&gt; بدلًا من ذلك، تحل الإنتاجية الفعالة الحقيقية
+للنظام R(&amp;lambda;) مباشرة من بيانات صورتك، باستخدام أطياف Gaia XP النجمية
+كمراجع للمعايرة. بلا افتراضات. بلا أوراق بيانات. فقط نظامك الفعلي،
+مقاسًا تجريبيًا من النجوم في مجالك.
+&lt;/p&gt;
+ 
+&lt;hr&gt;
+ 
+&lt;h2&gt;كيف تعمل؟&lt;/h2&gt;
+&lt;p&gt;
+لكل نجم معايرة، قاست Gaia طيف تدفق مستمرًا من ~330&amp;ndash;1050&amp;nbsp;nm
+بدقة ~2.5&amp;nbsp;nm. تكامل SSSC تلك الأطياف عبر منحنيات نفاذية مرشحاتك
+وتحل قيمة R(&amp;lambda;) التي تفسر على أفضل وجه الفرق بين ما تتنبأ به Gaia
+وما قاسته كاميرتك فعليًا. المعادلة الأساسية هي:
+&lt;/p&gt;
+&lt;p style="margin-left:20px; font-family:monospace; color:#88ffcc;"&gt;
+measured&lt;sub&gt;c&lt;/sub&gt;(i) = k&lt;sub&gt;c&lt;/sub&gt; &amp;times; &amp;int; flux&lt;sub&gt;i&lt;/sub&gt;(&amp;lambda;)
+&amp;times; T&lt;sub&gt;filter&lt;/sub&gt;(&amp;lambda;) &amp;times; R(&amp;lambda;) d&amp;lambda;
+&lt;/p&gt;
+&lt;p&gt;
+تمتص R(&amp;lambda;) كل ما لا تستطيع ورقة البيانات إخبارك به: QE الحقيقية للمستشعر عند
+درجة حرارة التشغيل، وإنتاجية المرايا والعدسات، وطلاء AR، ومسطّح المجال،
+والخمود الجوي. تبقى منحنيات نفاذية المرشحات كمدخلات &amp;mdash;
+إذ ينشر المصنعون قياسات تداخلية موثوقة لها.
+&lt;/p&gt;
+ 
+&lt;hr&gt;
+ 
+&lt;h2&gt;مراحل الإقلاع&lt;/h2&gt;
+&lt;p&gt;
+تتحسن جودة الحل تلقائيًا كلما توفر المزيد من نجوم المعايرة.
+تختار SSSC أعلى مرحلة يدعمها مجالك:
+&lt;/p&gt;
+&lt;ul&gt;
+  &lt;li&gt;&lt;span class="stage"&gt;المرحلة 1 (&amp;lt;50 نجمًا):&lt;/span&gt;
+      كسب عددي لكل قناة k&lt;sub&gt;R&lt;/sub&gt;، k&lt;sub&gt;G&lt;/sub&gt;، k&lt;sub&gt;B&lt;/sub&gt;.
+      وهذا يعادل SPCC العددي التقليدي &amp;mdash; تصحيح واحد لتوازن الأبيض
+      لكل قناة. يعمل دائمًا كخط أساس.&lt;/li&gt;
+  &lt;li&gt;&lt;span class="stage"&gt;المرحلة 2 (50&amp;ndash;200 نجم):&lt;/span&gt;
+      كسب معتمد على اللون داخل كل نطاق، يُلاءم كميل أو تآلفي أو تربيعي
+      حسب ما يصف بياناتك بشكل أفضل. يلتقط الاعتماد السائد على الطول الموجي
+      داخل نطاق تمرير كل مرشح. يضاهي ملاءمة SPCC متعددة الحدود في SASpro،
+      التي تتجاوز بالفعل جودة SPCC العددي التقليدي في معظم الحقول النجمية
+      العادية &amp;mdash; وتحقق SSSC ذلك دون أي افتراض لمنحنى QE على الإطلاق.&lt;/li&gt;
+  &lt;li&gt;&lt;span class="stage"&gt;المرحلة 3 (200+ نجم، مدى B&amp;minus;V &amp;ge; 1.5):&lt;/span&gt;
+      شكل R(&amp;lambda;) الكامل محلول لكل قناة على نقاط تحكم خطية متقطعة بملاءمة دقيقة بطريقة المربعات الصغرى. النجوم الزرقاء الحارة تقيّد الحافة الزرقاء لكل مرشح؛ والنجوم الحمراء الباردة تقيّد الحافة الحمراء. يُحفظ حل كل تشغيل في سجل الجلسة، الذي ستجمعه المرحلة 4 متعددة الليالي.&lt;/li&gt;
+  &lt;li&gt;&lt;span class="stage future"&gt;المرحلة 4 (مستقبلًا &amp;mdash; DR4 + ليالٍ متعددة):&lt;/span&gt;
+      فصل الارتباط بين الغلاف الجوي والعتاد. بالتصوير عبر ليالٍ متعددة عند كتل هوائية
+      مختلفة، تنفصل R(&amp;lambda;) إلى مكوّن عتادي ثابت ومكوّن جوي
+      متغير. بمجرد التقارب، يُثبَّت منحنى QE المقاس تجريبيًا لديك
+      بشكل دائم &amp;mdash; فتعود المعايرة إلى سرعة المرحلة 2 بدقة المرحلة 3+
+      باستخدام منحناك الفعلي بدلًا من تخمين الشركة المصنعة.&lt;/li&gt;
+&lt;/ul&gt;
+ 
+&lt;hr&gt;
+ 
+&lt;h2&gt;ماذا يمكن لـ SSSC أن تفعل اليوم مع Gaia DR3؟&lt;/h2&gt;
+&lt;p&gt;
+يوفر Gaia DR3 أطياف XP مستمرة للنجوم حتى G&amp;nbsp;&amp;le;&amp;nbsp;15.5 تقريبًا.
+في صورة نموذجية واسعة المجال (0.5&amp;ndash;2&amp;deg; FOV) ينتج ذلك 200&amp;ndash;600
+نجم معايرة، ضمن نطاق المرحلة 3 بارتياح لمعظم الحقول.
+&lt;/p&gt;
+&lt;p&gt;
+في الاختبارات على بيانات حقيقية، تطابق ألوان النجوم في SSSC معيارًا طيفيًا ضوئيًا كاملًا ضمن 1&amp;ndash;2&amp;nbsp;% دون أي منحنى QE. يظهر RMS المتبقي لكل مرحلة جرى تشغيلها في لوحة شلال جودة المعايرة في كل تشغيل.
+&lt;/p&gt;
+&lt;p class="note"&gt;
+نصيحة: شغّل SSSC على صور من نفس المعدات عبر عدة ليالٍ. يُحفظ R(&amp;lambda;) لكل تشغيل في سجل الجلسة، جاهزًا للمرحلة 4 متعددة الليالي. يفصل حقل تسمية الكاميرا&amp;nbsp;/&amp;nbsp;المعدات السجل لكل مستشعر حتى لا تختلط الحلول بين قطارات تصوير مختلفة.
+&lt;/p&gt;
+ 
+&lt;hr&gt;
+ 
+&lt;h2 class="future"&gt;ماذا ستفعل SSSC مع Gaia DR4؟&lt;/h2&gt;
+&lt;p&gt;
+من المتوقع أن يمد Gaia DR4 أطياف XP إلى G&amp;nbsp;&amp;le;&amp;nbsp;16.5، مما يؤدي تقريبًا إلى
+&lt;b&gt;مضاعفة عدد نجوم المعايرة ثلاث مرات&lt;/b&gt; في معظم الحقول. وهذا يعني:
+&lt;/p&gt;
+&lt;ul&gt;
+  &lt;li&gt;الحقول التي تصل حاليًا إلى المرحلة 2 ستصل بشكل موثوق إلى المرحلة 3&lt;/li&gt;
+  &lt;li&gt;تصبح المرحلة 3 مع 16+ نقطة تحكم مقيّدة جيدًا (&amp;gt;1000 نجم)&lt;/li&gt;
+  &lt;li&gt;يصبح فصل ارتباط الغلاف الجوي في المرحلة 4 ممكنًا &amp;mdash; نجوم كافية في كل
+      جلسة لتحليل المكوّن المعتمد على الكتلة الهوائية في R(&amp;lambda;)&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;
+الهدف النهائي للمرحلة 4: بمجرد تقارب R(&amp;lambda;) لعتادك من بيانات ليالٍ
+متعددة، تُحفظ بشكل دائم في ذاكرة الجلسة المؤقتة. كل تشغيل معايرة
+لاحق يحمّل ذلك المنحنى كمدخل معروف &amp;mdash; بلا حاجة لحلّال، بسرعة المرحلة 2،
+ودقة صحيحة تجريبيًا. كما يحافظ المنحنى على نفسه ذاتيًا: أكسدة المرايا،
+وتقادم المستشعر، وتغييرات المرشحات تظهر كلها كانجراف في R(&amp;lambda;) وتستدعي تحديثًا.
+&lt;/p&gt;
+ 
+&lt;hr&gt;
+ 
+&lt;h2&gt;المراجع&lt;/h2&gt;
+&lt;ul&gt;
+  &lt;li&gt;Riello et al. 2021 &amp;mdash; &lt;i&gt;Gaia EDR3: Photometric content and validation&lt;/i&gt;،
+      A&amp;amp;A 649, A3 &amp;mdash; خط معالجة المعايرة الذي تحاكيه SSSC&lt;/li&gt;
+  &lt;li&gt;Carrasco et al. 2021 &amp;mdash; &lt;i&gt;Gaia photometric science alerts programme&lt;/i&gt;&lt;/li&gt;
+  &lt;li&gt;Fabricius et al. 2021 &amp;mdash; &lt;i&gt;Gaia EDR3: Catalogue validation&lt;/i&gt;&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p class="note" style="margin-top:16px;"&gt;
+SSSC جزء من SetiAstro Suite Pro &amp;mdash; www.setiastro.com
+&lt;/p&gt;
+</translation>
+    </message>
+    <message>
+      <source>  ✓ Stage 3 (full R(λ)) solved from {0} stars.
+  Saved to the session history of this filter+camera combination.</source>
+      <translation>  ✓ تم حل المرحلة 3 (R(λ) كاملة) من {0} نجم.
+  حُفظ في سجل الجلسة لتركيبة المرشح+الكاميرا هذه.</translation>
+    </message>
+    <message>
+      <source>The stars do not follow these filter curves well (scalar fit residual {0:.0%}). Check the filters chosen: an OSC camera behind a UV/IR cut needs the UV/IR-cut curves, or the cut filter as LP/Cut.</source>
+      <translation>لا تتبع النجوم منحنيات المرشحات هذه جيدًا (متبقي الملاءمة القياسية {0:.0%}). تحقق من المرشحات المختارة: كاميرا OSC خلف مرشح UV/IR-cut تحتاج إلى منحنيات UV/IR-cut، أو إلى مرشح القطع بصفته LP/Cut.</translation>
+    </message>
+    <message>
+      <source>Calibrated ✓</source>
+      <translation>تمت المعايرة ✓</translation>
+    </message>
+    <message>
+      <source>Applied to this image. It turns back into Calibrate when you change a setting,
+switch to another image or undo.</source>
+      <translation>طُبّقت على هذه الصورة. يعود الزر إلى «معايرة» عند تغيير أي إعداد
+أو الانتقال إلى صورة أخرى أو التراجع.</translation>
+    </message>
+    <message>
+      <source>Every calibration is saved under a session: the R/G/B filters, LP filters and
+camera / rig name together. Each run is solved on its own stars; the saved
+R(λ) curves and their uncertainties are the record the multi-night Stage 4
+will combine.</source>
+      <translation>تُحفظ كل معايرة ضمن جلسة: مرشحات R/G/B ومرشحات LP
+واسم الكاميرا / المعدات معًا. يُحل كل تشغيل باستخدام نجومه الخاصة؛
+ومنحنيات R(λ) المحفوظة مع أوجه عدم اليقين فيها هي السجل الذي ستجمعه
+المرحلة 4 متعددة الليالي.</translation>
+    </message>
+    <message>
+      <source>View History…</source>
+      <translation>عرض السجل…</translation>
+    </message>
+    <message>
+      <source>Every saved run of this session and the others: the R(λ) curves Stage 3
+measured, the channel gains run by run, and deleting a single bad run</source>
+      <translation>كل تشغيل محفوظ لهذه الجلسة وللجلسات الأخرى: منحنيات R(λ) التي قاستها المرحلة 3،
+ومعاملات كسب القنوات لكل تشغيل، وحذف تشغيل واحد سيئ</translation>
+    </message>
+    <message>
+      <source>Session history unavailable: {0}</source>
+      <translation>سجل الجلسات غير متاح: {0}</translation>
+    </message>
+    <message>
+      <source>Session {0}</source>
+      <translation>الجلسة {0}</translation>
+    </message>
+    <message>
+      <source>Last: {0}  ·  Stage {1}  ·  {2} stars  ·  RMS {3}</source>
+      <translation>الأخير: {0}  ·  المرحلة {1}  ·  عدد النجوم: {2}  ·  RMS {3}</translation>
+    </message>
+    <message>
+      <source>No runs yet: the first calibration starts this setup's history.</source>
+      <translation>لا توجد تشغيلات بعد: أول معايرة تبدأ سجل هذه المعدات.</translation>
+    </message>
+    <message>
+      <source>{0} other session(s) use these filters under a different camera name: see View History.</source>
+      <translation>عدد الجلسات الأخرى التي تستخدم هذه المرشحات باسم كاميرا مختلف: {0}. راجع «عرض السجل».</translation>
+    </message>
+    <message>
+      <source>Name the camera / rig to keep each setup's history apart.</source>
+      <translation>سمِّ الكاميرا / المعدات للفصل بين سجل كل إعداد.</translation>
+    </message>
+    <message>
+      <source>1 run</source>
+      <translation>تشغيل واحد</translation>
+    </message>
+    <message>
+      <source>{0} runs</source>
+      <translation>عدد التشغيلات: {0}</translation>
+    </message>
+    <message>
+      <source>nights unknown (no DATE-OBS)</source>
+      <translation>عدد الليالي غير معروف (لا يوجد DATE-OBS)</translation>
+    </message>
+    <message>
+      <source>1 night</source>
+      <translation>ليلة واحدة</translation>
+    </message>
+    <message>
+      <source>{0} nights</source>
+      <translation>عدد الليالي: {0}</translation>
+    </message>
+    <message>
+      <source>{0}, {1}  ·  best: Stage {2} from {3} stars</source>
+      <translation>{0}، {1}  ·  الأفضل: المرحلة {2}، عدد النجوم: {3}</translation>
+    </message>
+    <message>
+      <source>LP: {0}</source>
+      <translation>LP: {0}</translation>
+    </message>
   </context>
   <context>
     <name>SSSCLoader</name>
@@ -59134,6 +59891,14 @@ Reload Scripts to see new ones.</source>
       <source>🖱️ &lt;b&gt;Click&lt;/b&gt;: show luminance &amp;nbsp;•&amp;nbsp; &lt;b&gt;Shift+Click&lt;/b&gt;: select that band &amp;nbsp;•&amp;nbsp; &lt;b&gt;Ctrl+Drag&lt;/b&gt;: pan &amp;nbsp;•&amp;nbsp; &lt;b&gt;Alt+Drag&lt;/b&gt;: draw region mask &amp;nbsp;•&amp;nbsp; &lt;b&gt;Wheel&lt;/b&gt;: zoom</source>
       <translation>🖱️ &lt;b&gt;نقر&lt;/b&gt;: إظهار النصوع &amp;nbsp;•&amp;nbsp; &lt;b&gt;Shift+نقر&lt;/b&gt;: تحديد ذلك النطاق &amp;nbsp;•&amp;nbsp; &lt;b&gt;Ctrl+سحب&lt;/b&gt;: تحريك &amp;nbsp;•&amp;nbsp; &lt;b&gt;Alt+سحب&lt;/b&gt;: رسم قناع منطقة &amp;nbsp;•&amp;nbsp; &lt;b&gt;العجلة&lt;/b&gt;: تكبير/تصغير</translation>
     </message>
+    <message>
+      <source>Low:</source>
+      <translation>الأدنى:</translation>
+    </message>
+    <message>
+      <source>High:</source>
+      <translation>الأعلى:</translation>
+    </message>
   </context>
   <context>
     <name>SerStackerDialog</name>
@@ -59818,6 +60583,10 @@ Thank you for being part of this journey. Clear skies.</source>
     <message>
       <source>{0} of {1} recommended layers</source>
       <translation>{0} من {1} طبقات موصى بها</translation>
+    </message>
+    <message>
+      <source>Close this window. Help &gt; Welcome and Setup opens it again.</source>
+      <translation>أغلق هذه النافذة. يفتحها المساعدة &gt; الترحيب والإعداد مرة أخرى.</translation>
     </message>
   </context>
   <context>
@@ -68278,6 +69047,14 @@ There's nothing to unwarp — the solution is already linear.</source>
       <source>WaveScale Dark Enhancer — Preset</source>
       <translation>WaveScale Dark Enhancer — إعداد مسبق</translation>
     </message>
+    <message>
+      <source>Amount:</source>
+      <translation>المقدار:</translation>
+    </message>
+    <message>
+      <source>Blend with the original image: 100% is the full effect, 0% leaves it unchanged.</source>
+      <translation>المزج مع الصورة الأصلية: 100% هو التأثير الكامل، و0% يتركها دون تغيير.</translation>
+    </message>
   </context>
   <context>
     <name>WaveScaleDarkEnhancerDialogPro</name>
@@ -68384,6 +69161,22 @@ Drop directly on an image to apply them headlessly.</source>
     <message>
       <source>Zoom Out</source>
       <translation>تصغير</translation>
+    </message>
+    <message>
+      <source>Amount:</source>
+      <translation>المقدار:</translation>
+    </message>
+    <message>
+      <source>Amount (0-100%)
+
+Blends the finished result with the original image. 100% is the full effect, 0% leaves the image unchanged.
+
+Changing it after a Preview re-blends the preview without recomputing. Default: 100%.</source>
+      <translation>المقدار (0-100%)
+
+يمزج النتيجة النهائية مع الصورة الأصلية. 100% هو التأثير الكامل، و0% يترك الصورة دون تغيير.
+
+تغييره بعد المعاينة يعيد مزج المعاينة دون إعادة الحساب. الافتراضي: 100%.</translation>
     </message>
   </context>
   <context>
@@ -68520,6 +69313,22 @@ Higher -&gt; larger-scale structure enhanced. Default: 5.</source>
       <source>Zoom Out</source>
       <translation>تصغير</translation>
     </message>
+    <message>
+      <source>Amount:</source>
+      <translation>المقدار:</translation>
+    </message>
+    <message>
+      <source>Amount (0-100%)
+
+Blends the finished result with the original image. 100% is the full effect, 0% leaves the image unchanged.
+
+Changing it after a Preview re-blends the preview without recomputing. Default: 100%.</source>
+      <translation>المقدار (0-100%)
+
+يمزج النتيجة النهائية مع الصورة الأصلية. 100% هو التأثير الكامل، و0% يترك الصورة دون تغيير.
+
+تغييره بعد المعاينة يعيد مزج المعاينة دون إعادة الحساب. الافتراضي: 100%.</translation>
+    </message>
   </context>
   <context>
     <name>WaveScaleHDRPresetDialog</name>
@@ -68542,6 +69351,14 @@ Higher -&gt; larger-scale structure enhanced. Default: 5.</source>
     <message>
       <source>WaveScale HDR — Preset</source>
       <translation>WaveScale HDR — إعداد مسبق</translation>
+    </message>
+    <message>
+      <source>Amount:</source>
+      <translation>المقدار:</translation>
+    </message>
+    <message>
+      <source>Blend with the original image: 100% is the full effect, 0% leaves it unchanged.</source>
+      <translation>المزج مع الصورة الأصلية: 100% هو التأثير الكامل، و0% يتركها دون تغيير.</translation>
     </message>
   </context>
   <context>
@@ -74836,6 +75653,113 @@ Drop directly on an image to apply them headlessly.</source>
 Drop it on an image to open {0} for that image.</source>
       <translation>اسحب إلى مساحة العمل لإنشاء اختصار لـ {0}، أو إلى الأساسيات لإضافته.
 أفلته على صورة لفتح {0} لتلك الصورة.</translation>
+    </message>
+  </context>
+  <context>
+    <name>SSSCHistoryDialog</name>
+    <message>
+      <source>1 run</source>
+      <translation>تشغيل واحد</translation>
+    </message>
+    <message>
+      <source>{0} runs</source>
+      <translation>عدد التشغيلات: {0}</translation>
+    </message>
+    <message>
+      <source>nights unknown (no DATE-OBS)</source>
+      <translation>عدد الليالي غير معروف (لا يوجد DATE-OBS)</translation>
+    </message>
+    <message>
+      <source>1 night</source>
+      <translation>ليلة واحدة</translation>
+    </message>
+    <message>
+      <source>{0} nights</source>
+      <translation>عدد الليالي: {0}</translation>
+    </message>
+    <message>
+      <source>{0}, {1}  ·  best: Stage {2} from {3} stars</source>
+      <translation>{0}، {1}  ·  الأفضل: المرحلة {2}، عدد النجوم: {3}</translation>
+    </message>
+    <message>
+      <source>LP: {0}</source>
+      <translation>LP: {0}</translation>
+    </message>
+    <message>
+      <source>SSSC Session History</source>
+      <translation>سجل جلسات SSSC</translation>
+    </message>
+    <message>
+      <source>Session:</source>
+      <translation>الجلسة:</translation>
+    </message>
+    <message>
+      <source>Date</source>
+      <translation>التاريخ</translation>
+    </message>
+    <message>
+      <source>Image</source>
+      <translation>الصورة</translation>
+    </message>
+    <message>
+      <source>Stage</source>
+      <translation>المرحلة</translation>
+    </message>
+    <message>
+      <source>Stars</source>
+      <translation>النجوم</translation>
+    </message>
+    <message>
+      <source>B−V range</source>
+      <translation>نطاق B−V</translation>
+    </message>
+    <message>
+      <source>RMS</source>
+      <translation>RMS</translation>
+    </message>
+    <message>
+      <source>White ref.</source>
+      <translation>المرجع الأبيض</translation>
+    </message>
+    <message>
+      <source>Airmass</source>
+      <translation>الكتلة الهوائية</translation>
+    </message>
+    <message>
+      <source>DATE-AVG / DATE-OBS from the image header, else when the run was calibrated</source>
+      <translation>DATE-AVG / DATE-OBS من ترويسة الصورة، وإلا فوقت معايرة التشغيل</translation>
+    </message>
+    <message>
+      <source>Delete Run</source>
+      <translation>حذف التشغيل</translation>
+    </message>
+    <message>
+      <source>Remove the selected run(s) from this session's history</source>
+      <translation>إزالة التشغيلات المحددة من سجل هذه الجلسة</translation>
+    </message>
+    <message>
+      <source>Close</source>
+      <translation>إغلاق</translation>
+    </message>
+    <message>
+      <source>(current settings)</source>
+      <translation>(الإعدادات الحالية)</translation>
+    </message>
+    <message>
+      <source>No runs saved for this session yet.</source>
+      <translation>لا توجد تشغيلات محفوظة لهذه الجلسة بعد.</translation>
+    </message>
+    <message>
+      <source>Select a run in the table first.</source>
+      <translation>حدد تشغيلاً في الجدول أولاً.</translation>
+    </message>
+    <message>
+      <source>Delete {0} run(s) from this session's history? This cannot be undone.</source>
+      <translation>حذف التشغيلات ({0}) من سجل هذه الجلسة؟ لا يمكن التراجع عن ذلك.</translation>
+    </message>
+    <message>
+      <source>Error</source>
+      <translation>خطأ</translation>
     </message>
   </context>
 </TS>

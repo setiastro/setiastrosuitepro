@@ -300,6 +300,15 @@ class NBtoRGBStars(QWidget):
         left.addWidget(self.spinner)
 
         left.addStretch(1)
+        # Grip + help: their own row at the bottom of the left column
+        from setiastro.saspro.shortcuts import ShortcutGrip
+        self.btn_doc_help = make_help_button("nb_rgb_stars", self)
+        grip_row = QHBoxLayout()
+        grip_row.setContentsMargins(0, 0, 0, 0)
+        grip_row.addWidget(ShortcutGrip("nbtorgb", self))
+        grip_row.addStretch(1)
+        grip_row.addWidget(self.btn_doc_help)
+        left.addLayout(grip_row)
         root.addWidget(left_host, 0)
 
         # -------- right: preview (zoom/pan like PPP)
@@ -319,10 +328,6 @@ class NBtoRGBStars(QWidget):
         tools.addWidget(self.btn_zoom_out)
         tools.addWidget(self.btn_fit)
         tools.addStretch(1)
-        self.btn_doc_help = make_help_button("nb_rgb_stars", self)
-        from setiastro.saspro.shortcuts import ShortcutGrip
-        tools.addWidget(ShortcutGrip("nbtorgb", self))
-        tools.addWidget(self.btn_doc_help)
         right.addLayout(tools)
 
 

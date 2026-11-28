@@ -12,7 +12,7 @@ run in the background (setup_manager.py), so the window can be closed and the
 steps can be visited in any order. Not modal, so SASpro stays usable and a
 layout choice shows behind it as it is clicked.
 
-Opened at startup by first_run_dialog.maybe_show_first_run_dialog, from About >
+Opened at startup by first_run_dialog.maybe_show_first_run_dialog, from Help >
 Welcome and Setup, from the reminder in the workspace corner, and from any tool
 that needs something not installed yet (offer_setup).
 """
@@ -665,7 +665,7 @@ class SetupCenter(QDialog):
         lay.setContentsMargins(22, 12, 22, 12)
         lay.setSpacing(10)
         self._later = _button(_t("Finish later"), "sc_link", self.close)
-        self._later.setToolTip(_t("Close this window. About > Welcome and Setup opens it again."))
+        self._later.setToolTip(_t("Close this window. Help > Welcome and Setup opens it again."))
         self._back = _button(_t("Back"), "sc_plain", lambda: self._step(-1))
         self._next = _button(_t("Next"), "sc_primary", lambda: self._step(1))
         self._next.setAutoDefault(True)

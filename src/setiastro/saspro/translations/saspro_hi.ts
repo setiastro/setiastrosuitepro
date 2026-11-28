@@ -4711,6 +4711,34 @@ Tools you added are taken off, the ones you removed come back, and the order is 
       <source>All Analysis Tools</source>
       <translation>सभी विश्लेषण उपकरण</translation>
     </message>
+    <message>
+      <source>Scripts &amp;&amp; &amp;Workflows</source>
+      <translation>स्क्रिप्ट और वर्कफ़्लो(&amp;W)</translation>
+    </message>
+    <message>
+      <source>Help</source>
+      <translation>सहायता</translation>
+    </message>
+    <message>
+      <source>Variable Stars &amp;&amp; Exoplanets...</source>
+      <translation>परिवर्ती तारे और एक्सोप्लैनेट...</translation>
+    </message>
+    <message>
+      <source>Find variable stars and exoplanet transits in time-series subs</source>
+      <translation>टाइम-सीरीज़ सब्स में परिवर्ती तारे और एक्सोप्लैनेट ट्रांज़िट खोजें</translation>
+    </message>
+    <message>
+      <source>Don't ask again unless there are unsaved images</source>
+      <translation>दोबारा न पूछें, जब तक बिना सहेजी छवियाँ न हों</translation>
+    </message>
+    <message>
+      <source>Preferences &gt; Always ask before exiting turns it back on.</source>
+      <translation>वरीयताएँ &gt; बाहर निकलने से पहले हमेशा पूछें इसे फिर से चालू करता है।</translation>
+    </message>
+    <message>
+      <source>Never saved:</source>
+      <translation>कभी सहेजी नहीं गईं:</translation>
+    </message>
   </context>
   <context>
     <name>AstrobinExportTab</name>
@@ -13727,6 +13755,118 @@ the border) or the frame doesn't cover it.</source>
       <source>⚠️ Using approximate XISF WCS (star matching may be imprecise)</source>
       <translation>⚠️ अनुमानित XISF WCS उपयोग किया जा रहा है (तारा मिलान अशुद्ध हो सकता है)</translation>
     </message>
+    <message>
+      <source>Variable Stars &amp; Exoplanets</source>
+      <translation>परिवर्ती तारे और एक्सोप्लैनेट</translation>
+    </message>
+    <message>
+      <source>Calibrated Subs</source>
+      <translation>कैलिब्रेटेड सब्स</translation>
+    </message>
+    <message>
+      <source>Load Frames</source>
+      <translation>फ़्रेम लोड करें</translation>
+    </message>
+    <message>
+      <source>Frames already loaded: {0}
+New frames selected: {1}</source>
+      <translation>पहले से लोड फ़्रेम: {0}
+चुने गए नए फ़्रेम: {1}</translation>
+    </message>
+    <message>
+      <source>Add</source>
+      <translation>जोड़ें</translation>
+    </message>
+    <message>
+      <source>Replace</source>
+      <translation>बदलें</translation>
+    </message>
+    <message>
+      <source>Select Calibrated Frames</source>
+      <translation>कैलिब्रेटेड फ़्रेम चुनें</translation>
+    </message>
+    <message>
+      <source>Fold at:</source>
+      <translation>फ़ोल्ड अवधि:</translation>
+    </message>
+    <message>
+      <source>Lomb-Scargle peak</source>
+      <translation>Lomb-Scargle शिखर</translation>
+    </message>
+    <message>
+      <source>2 × Lomb-Scargle peak</source>
+      <translation>2 × Lomb-Scargle शिखर</translation>
+    </message>
+    <message>
+      <source>BLS period</source>
+      <translation>BLS आवर्तकाल</translation>
+    </message>
+    <message>
+      <source>2 × BLS period</source>
+      <translation>2 × BLS आवर्तकाल</translation>
+    </message>
+    <message>
+      <source>Custom</source>
+      <translation>कस्टम</translation>
+    </message>
+    <message>
+      <source>Period:</source>
+      <translation>आवर्तकाल:</translation>
+    </message>
+    <message>
+      <source>Detrended</source>
+      <translation>डीट्रेंड किया हुआ</translation>
+    </message>
+    <message>
+      <source>Phase (0 = minimum light)</source>
+      <translation>फ़ेज़ (0 = न्यूनतम प्रकाश)</translation>
+    </message>
+    <message>
+      <source>No usable points to fold.</source>
+      <translation>फ़ोल्ड करने के लिए कोई उपयोगी बिंदु नहीं।</translation>
+    </message>
+    <message>
+      <source>data</source>
+      <translation>डेटा</translation>
+    </message>
+    <message>
+      <source>phase bins (0.02)</source>
+      <translation>फ़ेज़ बिन (0.02)</translation>
+    </message>
+    <message>
+      <source>{0} — folded at P = {1:.6f} d</source>
+      <translation>{0} — P = {1:.6f} d पर फ़ोल्ड किया गया</translation>
+    </message>
+    <message>
+      <source>Variable Star Fold</source>
+      <translation>परिवर्ती तारा फ़ोल्ड</translation>
+    </message>
+    <message>
+      <source>Add the new frames to the loaded ones (another night, or another folder), or replace them?</source>
+      <translation>नए फ़्रेम लोड किए गए फ़्रेमों में जोड़ें (दूसरी रात, या दूसरा फ़ोल्डर), या उन्हें बदल दें?</translation>
+    </message>
+    <message>
+      <source>Period to fold at.  Lomb-Scargle suits smooth variation (pulsating
+stars); BLS suits eclipses.  An EW binary's two minima put both at
+half its period: use the 2 × choices.  Type a period for Custom.</source>
+      <translation>फ़ोल्ड करने का आवर्तकाल।  Lomb-Scargle सहज परिवर्तन (स्पंदित
+तारों) के लिए उपयुक्त है; BLS ग्रहणों के लिए।  EW युग्म के दो न्यूनतम दोनों को
+उसके आवर्तकाल के आधे पर रखते हैं: 2 × विकल्प चुनें।  कस्टम के लिए आवर्तकाल लिखें।</translation>
+    </message>
+    <message>
+      <source>Off: the differential flux before detrending, every night at its own
+level.  A trend fit can take part of a slow variation with it.
+On: the curve with the main window's Detrend applied, which also
+divides out the step at a meridian flip.</source>
+      <translation>बंद: डीट्रेंड से पहले का डिफ़रेंशियल फ़्लक्स, हर रात अपने
+स्तर पर।  ट्रेंड फ़िट धीमे परिवर्तन का कुछ हिस्सा भी हटा सकता है।
+चालू: मुख्य विंडो का डीट्रेंड लगा हुआ वक्र, जो मेरिडियन फ़्लिप पर
+आने वाले उछाल को भी विभाजित करके हटाता है।</translation>
+    </message>
+    <message>
+      <source>P = {0:.6f} d ({1:.3f} h)   Minimum light JD {2:.5f} (UTC)   Binned amplitude {3:.3f} mag   {4:.1f} cycles covered</source>
+      <translation>P = {0:.6f} d ({1:.3f} h)   न्यूनतम प्रकाश JD {2:.5f} (UTC)   बिन आयाम {3:.3f} mag   {4:.1f} चक्र शामिल</translation>
+    </message>
   </context>
   <context>
     <name>FITSModifier</name>
@@ -18891,6 +19031,14 @@ Mouse Wheel to zoom.</source>
       <source>🖱️ &lt;b&gt;Click&lt;/b&gt;: show hue  &amp;nbsp;•&amp;nbsp; &lt;b&gt;Shift+Click&lt;/b&gt;: select that color  &amp;nbsp;•&amp;nbsp; &lt;b&gt;Ctrl+Drag&lt;/b&gt;: pan  &amp;nbsp;•&amp;nbsp; &lt;b&gt;Alt+Drag&lt;/b&gt;: draw region mask  &amp;nbsp;•&amp;nbsp; &lt;b&gt;Wheel&lt;/b&gt;: zoom</source>
       <translation>🖱️ &lt;b&gt;क्लिक&lt;/b&gt;: ह्यू दिखाएं  &amp;nbsp;•&amp;nbsp; &lt;b&gt;Shift+क्लिक&lt;/b&gt;: वह रंग चुनें  &amp;nbsp;•&amp;nbsp; &lt;b&gt;Ctrl+खींचें&lt;/b&gt;: पैन  &amp;nbsp;•&amp;nbsp; &lt;b&gt;Alt+खींचें&lt;/b&gt;: क्षेत्र मास्क बनाएं  &amp;nbsp;•&amp;nbsp; &lt;b&gt;व्हील&lt;/b&gt;: ज़ूम</translation>
     </message>
+    <message>
+      <source>Chromaticity</source>
+      <translation>क्रोमैटिसिटी</translation>
+    </message>
+    <message>
+      <source>Lightness</source>
+      <translation>लाइटनेस</translation>
+    </message>
   </context>
   <context>
     <name>SettingsDialog</name>
@@ -19945,6 +20093,22 @@ GPU त्वरण सक्रिय करने के लिए कृप�
     <message>
       <source>System</source>
       <translation>सिस्टम</translation>
+    </message>
+    <message>
+      <source>This is already being installed by the setup window. Help &gt; Welcome and Setup shows its progress.</source>
+      <translation>यह पहले से सेटअप विंडो द्वारा इंस्टॉल किया जा रहा है। सहायता &gt; स्वागत और सेटअप इसकी प्रगति दिखाता है।</translation>
+    </message>
+    <message>
+      <source>Always ask before exiting</source>
+      <translation>बाहर निकलने से पहले हमेशा पूछें</translation>
+    </message>
+    <message>
+      <source>Checked, SASpro asks before it closes.
+Unchecked, it only asks when an image has unsaved edits or was
+never saved, or an install or download is still running.</source>
+      <translation>चुना होने पर, SASpro बंद होने से पहले पूछता है।
+न चुना होने पर, यह केवल तब पूछता है जब किसी छवि में बिना सहेजे संपादन हों या वह कभी
+सहेजी न गई हो, या कोई इंस्टॉल या डाउनलोड अभी चल रहा हो।</translation>
     </message>
   </context>
   <context>
@@ -28190,6 +28354,57 @@ Kept: the stacking folder and other paths, the loaded frames, the masters and th
 
 बने रहते हैं: स्टैकिंग फ़ोल्डर और अन्य पथ, लोड किए गए फ़्रेम, मास्टर और उनके Dark/Flat चयन, संरेखण सेट और संदर्भ फ़्रेम, आपकी सहेजी गई प्रोफ़ाइलें, और "अनुकूलित करें…" द्वारा मापे गए मान। जब तक फ़्रेम किसी समूहन सहनशीलता के अनुसार समूहित हैं, वह सहनशीलता बनी रहती है।</translation>
     </message>
+    <message>
+      <source>New master after a gap of:</source>
+      <translation>इतने अंतराल के बाद नया मास्टर:</translation>
+    </message>
+    <message>
+      <source> days</source>
+      <translation> दिन</translation>
+    </message>
+    <message>
+      <source>every night</source>
+      <translation>हर रात</translation>
+    </message>
+    <message>
+      <source>Darks with the same exposure, temperature, gain and offset make one master
+until there is a gap of more than this many days between the nights they
+were shot. A dark library shot over a few nights stays one master; darks
+from other months or years become separate masters, and each light uses
+the master nearest its own date.
+Every night: one master per night. Darks with no date combine as before.</source>
+      <translation>एक जैसे एक्सपोज़र, तापमान, गेन और ऑफ़सेट वाले डार्क तब तक एक मास्टर बनाते हैं
+जब तक उनकी रातों के बीच इतने से ज़्यादा दिनों का अंतराल न हो।
+कुछ रातों में ली गई डार्क लाइब्रेरी एक ही मास्टर रहती है; दूसरे महीनों या सालों
+के डार्क अलग मास्टर बनते हैं, और हर लाइट अपनी तारीख के सबसे पास वाला मास्टर लेती है।
+हर रात: हर रात का एक मास्टर। बिना तारीख वाले डार्क पहले की तरह जुड़ते हैं।</translation>
+    </message>
+    <message>
+      <source>Shared session-detection toggle (also affects Lights and Flats).
+Darks don't use sessions: they combine by exposure, image size,
+temperature, gain and offset, and split only by 'New master after
+a gap of', so this setting does not change how darks are combined.</source>
+      <translation>साझा सत्र-पहचान स्विच (लाइट्स और फ्लैट्स पर भी असर डालता है)।
+डार्क सत्र इस्तेमाल नहीं करते: वे एक्सपोज़र, छवि आकार, तापमान, गेन और ऑफ़सेट से
+जुड़ते हैं और केवल "इतने अंतराल के बाद नया मास्टर" से अलग होते हैं,
+इसलिए यह सेटिंग डार्क के जुड़ने का तरीका नहीं बदलती।</translation>
+    </message>
+    <message>
+      <source>⚠ darks from {0}, {1} days from these frames</source>
+      <translation>⚠ {0} के डार्क, इन फ़्रेमों से {1} दिन दूर</translation>
+    </message>
+    <message>
+      <source>Auto picks by size, then gain, exposure, date and temperature. Each flat group's Dark row shows its pick: choose another master, or None, there.</source>
+      <translation>स्वतः आकार से चुनता है, फिर गेन, एक्सपोज़र, तारीख और तापमान से। हर फ्लैट समूह की डार्क पंक्ति उसका चयन दिखाती है: वहीं कोई दूसरा मास्टर, या कोई नहीं, चुनें।</translation>
+    </message>
+    <message>
+      <source>Auto picks by size, then gain, exposure, date and temperature. Pick another master, or None, for this group only. Right-click frames to give them their own.</source>
+      <translation>स्वतः आकार से चुनता है, फिर गेन, एक्सपोज़र, तारीख और तापमान से। केवल इस समूह के लिए कोई दूसरा मास्टर, या कोई नहीं, चुनें। फ़्रेमों को उनका अपना देने के लिए उन पर राइट-क्लिक करें।</translation>
+    </message>
+    <message>
+      <source>Auto picks by size, then gain, exposure, date and temperature. Pick another master, or None, for this group only.</source>
+      <translation>स्वतः आकार से चुनता है, फिर गेन, एक्सपोज़र, तारीख और तापमान से। केवल इस समूह के लिए कोई दूसरा मास्टर, या कोई नहीं, चुनें।</translation>
+    </message>
   </context>
   <context>
     <name>StarSpikesDialogPro</name>
@@ -31199,6 +31414,14 @@ Open images, tool settings, presets and shortcuts are not changed.</source>
     <message>
       <source>analyze dither offsets from a set of frames or a completed stack run</source>
       <translation>फ़्रेमों के समूह या पूर्ण स्टैक रन से डिथर ऑफ़सेट का विश्लेषण करें</translation>
+    </message>
+    <message>
+      <source>Variable Stars &amp;&amp; Exoplanets...</source>
+      <translation>परिवर्ती तारे और एक्सोप्लैनेट...</translation>
+    </message>
+    <message>
+      <source>Find variable stars and exoplanet transits in time-series subs</source>
+      <translation>टाइम-सीरीज़ सब्स में परिवर्ती तारे और एक्सोप्लैनेट ट्रांज़िट खोजें</translation>
     </message>
   </context>
   <context>
@@ -39677,6 +39900,46 @@ SASpro इन स्थानों की जाँच करता है:
 
 प्रोफ़ाइल इंस्टॉल होने तक डिस्प्ले और निर्यात टैगिंग sRGB पर लौट आएगी।</translation>
     </message>
+    <message>
+      <source>FITS options</source>
+      <translation>FITS विकल्प</translation>
+    </message>
+    <message>
+      <source>Same as source file</source>
+      <translation>स्रोत फ़ाइल जैसा</translation>
+    </message>
+    <message>
+      <source>Same as source file (bottom-up)</source>
+      <translation>स्रोत फ़ाइल जैसा (नीचे से ऊपर)</translation>
+    </message>
+    <message>
+      <source>Same as source file (top-down)</source>
+      <translation>स्रोत फ़ाइल जैसा (ऊपर से नीचे)</translation>
+    </message>
+    <message>
+      <source>Top-down</source>
+      <translation>ऊपर से नीचे</translation>
+    </message>
+    <message>
+      <source>Bottom-up</source>
+      <translation>नीचे से ऊपर</translation>
+    </message>
+    <message>
+      <source>The order the image rows are stored in. SASpro and PixInsight read both,
+using the ROWORDER keyword. Siril shows top-down files upside down, so
+use Bottom-up for files going to Siril.
+Same as source file: bottom-up when the image came from a bottom-up
+FITS (Siril's own files), top-down otherwise.</source>
+      <translation>छवि की पंक्तियाँ किस क्रम में सहेजी जाती हैं। SASpro और PixInsight ROWORDER कीवर्ड से
+दोनों पढ़ते हैं। Siril ऊपर से नीचे वाली फ़ाइलें उलटी दिखाता है, इसलिए
+Siril के लिए फ़ाइलों में नीचे से ऊपर चुनें।
+स्रोत फ़ाइल जैसा: छवि नीचे से ऊपर वाली FITS (Siril की अपनी फ़ाइलें) से आई हो तो
+नीचे से ऊपर, अन्यथा ऊपर से नीचे।</translation>
+    </message>
+    <message>
+      <source>Row order</source>
+      <translation>पंक्ति क्रम</translation>
+    </message>
   </context>
   <context>
     <name>FXDialog</name>
@@ -40799,6 +41062,14 @@ Drawn chart: a vector star chart (SVG / PDF / PNG / new image).</source>
       <source>💡 The Icon Cheat Sheet under View → Shortcuts shows every toolbar icon with its function at a glance.</source>
       <translation>💡 दृश्य → शॉर्टकट के अंतर्गत आइकन चीट शीट हर टूलबार आइकन को उसके फ़ंक्शन के साथ एक नज़र में दिखाती है।</translation>
     </message>
+    <message>
+      <source>💡 Bored? Check under the Help menu. You're welcome. 🙂</source>
+      <translation>💡 बोर हो रहे हैं? सहायता मेनू में देखें। आपका स्वागत है। 🙂</translation>
+    </message>
+    <message>
+      <source>💡 Press F1 (Help → Documentation) to browse and search every SASpro help page.</source>
+      <translation>💡 हर SASpro सहायता पृष्ठ ब्राउज़ करने और खोजने के लिए F1 (सहायता → दस्तावेज़ीकरण) दबाएँ।</translation>
+    </message>
   </context>
   <context>
     <name>FirstStepsTour</name>
@@ -40965,6 +41236,14 @@ Crop is under Functions → Repair &amp; Retouch → Crop. Drag the box inside t
     <message>
       <source>First Steps</source>
       <translation>पहले कदम</translation>
+    </message>
+    <message>
+      <source>Ctrl+Z undoes any step, and Edit → History Explorer lists them all.
+
+A full workflow removes gradients and calibrates colour before stretching. The beginner tutorial walks through it.</source>
+      <translation>Ctrl+Z किसी भी चरण को पूर्ववत करता है, और संपादन → इतिहास एक्सप्लोरर उन सभी को सूचीबद्ध करता है।
+
+एक पूर्ण वर्कफ़्लो स्ट्रेचिंग से पहले ग्रेडिएंट हटाता है और रंग कैलिब्रेट करता है। शुरुआती ट्यूटोरियल इसे चरण-दर-चरण समझाता है।</translation>
     </message>
   </context>
   <context>
@@ -42758,6 +43037,10 @@ Drop directly on an image to apply them headlessly.</source>
     <message>
       <source>Workflow Assistant</source>
       <translation>वर्कफ़्लो सहायक</translation>
+    </message>
+    <message>
+      <source>Variable Stars &amp; Exoplanets</source>
+      <translation>परिवर्ती तारे और एक्सोप्लैनेट</translation>
     </message>
   </context>
   <context>
@@ -55791,6 +56074,84 @@ If the result looks overcorrected, try 'poly2' instead of '{7}'.</source>
       <source>Step 1: Fetch Stars &amp;&amp; Spectra from Current View</source>
       <translation>चरण 1: वर्तमान दृश्य से तारे और स्पेक्ट्रा प्राप्त करें</translation>
     </message>
+    <message>
+      <source>Optical Chain</source>
+      <translation>ऑप्टिकल श्रृंखला</translation>
+    </message>
+    <message>
+      <source>Options</source>
+      <translation>विकल्प</translation>
+    </message>
+    <message>
+      <source>Calibrate</source>
+      <translation>कैलिब्रेट करें</translation>
+    </message>
+    <message>
+      <source>Light-pollution or UV/IR-cut filters in the light path, if any.</source>
+      <translation>प्रकाश पथ में लाइट-पॉल्यूशन या UV/IR-कट फ़िल्टर, यदि कोई हों।</translation>
+    </message>
+    <message>
+      <source>Also make the sky background neutral grey after calibrating.</source>
+      <translation>कैलिब्रेशन के बाद आकाश की पृष्ठभूमि को भी तटस्थ धूसर बनाएँ।</translation>
+    </message>
+    <message>
+      <source>The camera's sensor (its QE curve).</source>
+      <translation>कैमरे का सेंसर (उसका QE वक्र)।</translation>
+    </message>
+    <message>
+      <source>Plot the filter, sensor and star curves against each other.</source>
+      <translation>फ़िल्टर, सेंसर और तारों के वक्रों को एक साथ प्लॉट करें।</translation>
+    </message>
+    <message>
+      <source>The star that should come out white. G2V (the Sun) is the usual choice;
+an average spiral galaxy is close to it.</source>
+      <translation>वह तारा जो सफ़ेद दिखना चाहिए। आम तौर पर G2V (सूर्य) चुना जाता है;
+एक औसत सर्पिल आकाशगंगा इसके क़रीब है।</translation>
+    </message>
+    <message>
+      <source>Calibrates the colour of the active view from the spectra of the stars in it. It needs a plate solution and offers to make one.</source>
+      <translation>सक्रिय व्यू के तारों के स्पेक्ट्रा से उसके रंग को कैलिब्रेट करता है। इसके लिए प्लेट समाधान चाहिए, और न हो तो यह उसे बनाने की पेशकश करता है।</translation>
+    </message>
+    <message>
+      <source>Find the stars, look up their spectra, measure them and correct the colour
+of the active view, all in one go.</source>
+      <translation>तारे खोजें, उनके स्पेक्ट्रा देखें, उन्हें मापें और सक्रिय व्यू का रंग
+ठीक करें, सब एक ही बार में।</translation>
+    </message>
+    <message>
+      <source>&lt;b&gt;Calibrated&lt;/b&gt; with {0} stars ({1} Gaia XP spectra, {2} Pickles templates) in {3:.1f} s.&lt;br&gt;Model: {4} · R ratio @ x=1: {5:.4f} · B ratio @ x=1: {6:.4f}</source>
+      <translation>&lt;b&gt;कैलिब्रेट किया गया&lt;/b&gt;: {0} तारे ({1} Gaia XP स्पेक्ट्रा, {2} Pickles टेम्पलेट), {3:.1f} s में।&lt;br&gt;मॉडल: {4} · R अनुपात @ x=1: {5:.4f} · B अनुपात @ x=1: {6:.4f}</translation>
+    </message>
+    <message>
+      <source>No Image</source>
+      <translation>कोई छवि नहीं</translation>
+    </message>
+    <message>
+      <source>Open an image and make it the active view first.</source>
+      <translation>पहले एक छवि खोलें और उसे सक्रिय व्यू बनाएँ।</translation>
+    </message>
+    <message>
+      <source>This image isn't plate-solved yet. Run the plate solver now?</source>
+      <translation>यह छवि अभी प्लेट-सॉल्व नहीं हुई है। क्या अभी प्लेट सॉल्वर चलाएँ?</translation>
+    </message>
+    <message>
+      <source>Plate Solve Error</source>
+      <translation>प्लेट सॉल्व त्रुटि</translation>
+    </message>
+    <message>
+      <source>Plate Solve Failed</source>
+      <translation>प्लेट सॉल्व विफल</translation>
+    </message>
+    <message>
+      <source>Calibrated ✓</source>
+      <translation>कैलिब्रेट हो गया ✓</translation>
+    </message>
+    <message>
+      <source>Applied to this image. It turns back into Calibrate when you change a setting,
+switch to another image or undo.</source>
+      <translation>इस छवि पर लागू किया गया। कोई सेटिंग बदलने, दूसरी छवि पर जाने या पूर्ववत करने पर
+यह फिर से “कैलिब्रेट करें” बन जाता है।</translation>
+    </message>
   </context>
   <context>
     <name>SLaPToolkit</name>
@@ -57193,6 +57554,402 @@ Stars are selected brightest-first, XP stars prioritized.
       <source>🔬  Step 2: Run SSSC Calibration</source>
       <translation>🔬  चरण 2: SSSC कैलिब्रेशन चलाएँ</translation>
     </message>
+    <message>
+      <source>Optical Chain</source>
+      <translation>ऑप्टिकल श्रृंखला</translation>
+    </message>
+    <message>
+      <source>Options</source>
+      <translation>विकल्प</translation>
+    </message>
+    <message>
+      <source>Calibrate</source>
+      <translation>कैलिब्रेट करें</translation>
+    </message>
+    <message>
+      <source>Light-pollution or UV/IR-cut filters in the light path, if any.</source>
+      <translation>प्रकाश पथ में लाइट-पॉल्यूशन या UV/IR-कट फ़िल्टर, यदि कोई हों।</translation>
+    </message>
+    <message>
+      <source>Also make the sky background neutral grey after calibrating.</source>
+      <translation>कैलिब्रेशन के बाद आकाश की पृष्ठभूमि को भी तटस्थ धूसर बनाएँ।</translation>
+    </message>
+    <message>
+      <source>The star that should come out white. G2V (the Sun) is the usual choice.</source>
+      <translation>वह तारा जो सफ़ेद दिखना चाहिए। आम तौर पर G2V (सूर्य) चुना जाता है।</translation>
+    </message>
+    <message>
+      <source>No sensor curve: SSSC solves the sensor's response from the stars.</source>
+      <translation>कोई सेंसर वक्र नहीं: SSSC तारों से सेंसर की प्रतिक्रिया निकालता है।</translation>
+    </message>
+    <message>
+      <source>Session History</source>
+      <translation>सत्र इतिहास</translation>
+    </message>
+    <message>
+      <source>Max stars:</source>
+      <translation>अधिकतम तारे:</translation>
+    </message>
+    <message>
+      <source>Calibrates the colour of the active view from Gaia XP star spectra, solving the sensor's response instead of assuming it. It needs a plate solution and offers to make one.</source>
+      <translation>Gaia XP तारकीय स्पेक्ट्रा से सक्रिय व्यू के रंग को कैलिब्रेट करता है, और सेंसर की प्रतिक्रिया को मानने के बजाय उसे निकालता है। इसके लिए प्लेट समाधान चाहिए, और न हो तो यह उसे बनाने की पेशकश करता है।</translation>
+    </message>
+    <message>
+      <source>Find the stars, look up their spectra, measure them, solve the system
+response and correct the colour of the active view, all in one go.</source>
+      <translation>तारे खोजें, उनके स्पेक्ट्रा देखें, उन्हें मापें, सिस्टम की प्रतिक्रिया निकालें
+और सक्रिय व्यू का रंग ठीक करें, सब एक ही बार में।</translation>
+    </message>
+    <message>
+      <source>&lt;b&gt;Calibrated&lt;/b&gt; with {0} stars ({1} Gaia XP spectra, {2} Pickles templates) in {3:.1f} s.&lt;br&gt;{4} · B-V {5:.2f} – {6:.2f} · residual RMS {7:.4f} · session runs {8}&lt;br&gt;Gains: k_R={9:.4f}  k_G={10:.4f}  k_B={11:.4f} · {12}</source>
+      <translation>&lt;b&gt;कैलिब्रेट किया गया&lt;/b&gt;: {0} तारे ({1} Gaia XP स्पेक्ट्रा, {2} Pickles टेम्पलेट), {3:.1f} s में।&lt;br&gt;{4} · B-V {5:.2f} – {6:.2f} · अवशिष्ट RMS {7:.4f} · सत्र रन {8}&lt;br&gt;गेन: k_R={9:.4f}  k_G={10:.4f}  k_B={11:.4f} · {12}</translation>
+    </message>
+    <message>
+      <source>
+ 
+&lt;h2&gt;What is SSSC?&lt;/h2&gt;
+&lt;p&gt;
+SSSC (Spectrophotometric Standard Star Calibration) is SetiAstro&amp;rsquo;s next-generation
+empirical color calibration, derived directly from the photometric calibration pipeline
+used internally by the Gaia space mission (Riello et al. 2021). The same mathematical
+framework that Gaia uses to self-calibrate a billion stars is applied here to calibrate
+your image &amp;mdash; using Gaia&amp;rsquo;s own XP stellar spectra as the reference standard.
+&lt;/p&gt;
+&lt;p&gt;
+Traditional calibration tools require a &lt;b&gt;sensor QE curve&lt;/b&gt; as input. The problem is
+that most published QE curves are promotional material &amp;mdash; measured at room temperature
+on a bare die, often representing a best-case sample rather than an independently-verified
+response for your specific sensor batch. They have no knowledge of your AR coating, your
+optical train, your atmosphere, or your electronics chain. The curve you apply is rarely
+the curve your camera actually has in practice.
+&lt;/p&gt;
+&lt;p&gt;
+&lt;b&gt;SSSC abandons the QE curve entirely.&lt;/b&gt; Instead, it solves for the true effective
+system throughput R(&amp;lambda;) directly from your image data, using Gaia XP stellar
+spectra as calibration references. No assumptions. No datasheets. Just your actual system,
+measured empirically from the stars in your field.
+&lt;/p&gt;
+ 
+&lt;hr&gt;
+ 
+&lt;h2&gt;How does it work?&lt;/h2&gt;
+&lt;p&gt;
+For each calibrator star, Gaia has measured a continuous flux spectrum from ~330&amp;ndash;1050&amp;nbsp;nm
+at ~2.5&amp;nbsp;nm resolution. SSSC integrates those spectra through your filter transmission
+curves and solves for the R(&amp;lambda;) that best explains the difference between what Gaia
+predicts and what your camera actually measured. The core equation is:
+&lt;/p&gt;
+&lt;p style="margin-left:20px; font-family:monospace; color:#88ffcc;"&gt;
+measured&lt;sub&gt;c&lt;/sub&gt;(i) = k&lt;sub&gt;c&lt;/sub&gt; &amp;times; &amp;int; flux&lt;sub&gt;i&lt;/sub&gt;(&amp;lambda;)
+&amp;times; T&lt;sub&gt;filter&lt;/sub&gt;(&amp;lambda;) &amp;times; R(&amp;lambda;) d&amp;lambda;
+&lt;/p&gt;
+&lt;p&gt;
+R(&amp;lambda;) absorbs everything the datasheet cannot tell you: true sensor QE at
+operating temperature, mirror and lens throughput, AR coating, field flattener,
+and atmospheric extinction. Filter transmission curves remain as inputs &amp;mdash;
+manufacturers publish reliable interferometric measurements for these.
+&lt;/p&gt;
+ 
+&lt;hr&gt;
+ 
+&lt;h2&gt;Bootstrap Stages&lt;/h2&gt;
+&lt;p&gt;
+The solution quality improves automatically as more calibrator stars are available.
+SSSC selects the highest stage your field supports:
+&lt;/p&gt;
+&lt;ul&gt;
+  &lt;li&gt;&lt;span class="stage"&gt;Stage 1 (&amp;lt;50 stars):&lt;/span&gt;
+      Scalar per-channel gains k&lt;sub&gt;R&lt;/sub&gt;, k&lt;sub&gt;G&lt;/sub&gt;, k&lt;sub&gt;B&lt;/sub&gt;.
+      This is equivalent to traditional scalar SPCC &amp;mdash; a single white-balance
+      correction per channel. Always runs as the baseline.&lt;/li&gt;
+  &lt;li&gt;&lt;span class="stage"&gt;Stage 2 (50&amp;ndash;200 stars):&lt;/span&gt;
+      Color-dependent gain within each band, fit as slope, affine, or quadratic
+      depending on which best describes your data. Captures the dominant wavelength
+      dependence within each filter passband. Comparable to SASpro&amp;rsquo;s polynomial
+      SPCC fit, which already exceeds traditional scalar SPCC quality on most normal
+      star fields &amp;mdash; and SSSC achieves this without any QE curve assumption at all.&lt;/li&gt;
+  &lt;li&gt;&lt;span class="stage"&gt;Stage 3 (200+ stars, B&amp;minus;V span &amp;ge; 1.5):&lt;/span&gt;
+      Full R(&amp;lambda;) shape solved per channel on piecewise-linear control points
+      by an exact least-squares fit. Hot blue stars constrain the blue edge of each filter;
+      cool red stars constrain the red edge. Each run&amp;rsquo;s solution is saved to the
+      session history, which the multi-night Stage 4 will combine.&lt;/li&gt;
+  &lt;li&gt;&lt;span class="stage future"&gt;Stage 4 (future &amp;mdash; DR4 + multi-night):&lt;/span&gt;
+      Atmosphere/hardware decorrelation. By imaging across multiple nights at different
+      airmasses, R(&amp;lambda;) separates into a stable hardware component and a variable
+      atmospheric component. Once converged, your empirically-measured QE curve is locked
+      in permanently &amp;mdash; calibration collapses back to Stage 2 speed with Stage 3+
+      accuracy, using your actual curve instead of a manufacturer guess.&lt;/li&gt;
+&lt;/ul&gt;
+ 
+&lt;hr&gt;
+ 
+&lt;h2&gt;What can SSSC do today with Gaia DR3?&lt;/h2&gt;
+&lt;p&gt;
+Gaia DR3 provides continuous XP spectra for stars to about G&amp;nbsp;&amp;le;&amp;nbsp;15.5.
+On a typical wide-field image (0.5&amp;ndash;2&amp;deg; FOV) this yields 200&amp;ndash;600
+calibrator stars, comfortably in Stage 3 territory for most fields.
+&lt;/p&gt;
+&lt;p&gt;
+In testing on real data, SSSC&amp;rsquo;s star colours match a full spectrophotometric
+standard to within 1&amp;ndash;2&amp;nbsp;% without any QE curve. The residual RMS of every
+stage that ran is shown in the Calibration Quality waterfall panel on every run.
+&lt;/p&gt;
+&lt;p class="note"&gt;
+Tip: run SSSC on images from the same rig across several nights. Each run&amp;rsquo;s
+R(&amp;lambda;) is saved to the session history, ready for the multi-night Stage 4.
+The Camera&amp;nbsp;/&amp;nbsp;Rig label field separates history per sensor so solutions
+don&amp;rsquo;t mix between different imaging trains.
+&lt;/p&gt;
+ 
+&lt;hr&gt;
+ 
+&lt;h2 class="future"&gt;What will SSSC do with Gaia DR4?&lt;/h2&gt;
+&lt;p&gt;
+Gaia DR4 is expected to extend XP spectra to G&amp;nbsp;&amp;le;&amp;nbsp;16.5, roughly
+&lt;b&gt;tripling the calibrator star count&lt;/b&gt; in most fields. This means:
+&lt;/p&gt;
+&lt;ul&gt;
+  &lt;li&gt;Fields that currently reach Stage 2 will reliably reach Stage 3&lt;/li&gt;
+  &lt;li&gt;Stage 3 with 16+ control points becomes well-constrained (&amp;gt;1000 stars)&lt;/li&gt;
+  &lt;li&gt;Stage 4 atmosphere decorrelation becomes feasible &amp;mdash; enough stars per
+      session to resolve the airmass-dependent component of R(&amp;lambda;)&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;
+The Stage 4 endgame: once your hardware R(&amp;lambda;) has converged from multi-night
+data, it is saved permanently to your session cache. Every subsequent calibration
+run loads that curve as a known input &amp;mdash; no solver needed, Stage 2 speed,
+empirically-correct accuracy. The curve also self-maintains: mirror oxidation,
+sensor aging, filter changes all appear as drift in R(&amp;lambda;) and trigger an update.
+&lt;/p&gt;
+ 
+&lt;hr&gt;
+ 
+&lt;h2&gt;References&lt;/h2&gt;
+&lt;ul&gt;
+  &lt;li&gt;Riello et al. 2021 &amp;mdash; &lt;i&gt;Gaia EDR3: Photometric content and validation&lt;/i&gt;,
+      A&amp;amp;A 649, A3 &amp;mdash; the calibration pipeline SSSC replicates&lt;/li&gt;
+  &lt;li&gt;Carrasco et al. 2021 &amp;mdash; &lt;i&gt;Gaia photometric science alerts programme&lt;/i&gt;&lt;/li&gt;
+  &lt;li&gt;Fabricius et al. 2021 &amp;mdash; &lt;i&gt;Gaia EDR3: Catalogue validation&lt;/i&gt;&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p class="note" style="margin-top:16px;"&gt;
+SSSC is part of SetiAstro Suite Pro &amp;mdash; www.setiastro.com
+&lt;/p&gt;
+</source>
+      <translation>
+ 
+&lt;h2&gt;SSSC क्या है?&lt;/h2&gt;
+&lt;p&gt;
+SSSC (Spectrophotometric Standard Star Calibration) SetiAstro का अगली पीढ़ी का
+अनुभवजन्य रंग कैलिब्रेशन है, जो सीधे उस फ़ोटोमेट्रिक कैलिब्रेशन पाइपलाइन से लिया गया है
+जिसे Gaia अंतरिक्ष मिशन आंतरिक रूप से उपयोग करता है (Riello et al. 2021)। वही गणितीय
+ढाँचा जिससे Gaia एक अरब तारों को स्व-कैलिब्रेट करता है, यहाँ आपकी छवि को कैलिब्रेट करने के लिए
+लागू किया जाता है &amp;mdash; संदर्भ मानक के रूप में Gaia के अपने XP तारकीय स्पेक्ट्रा का उपयोग करके।
+&lt;/p&gt;
+&lt;p&gt;
+पारंपरिक कैलिब्रेशन टूल्स को इनपुट के रूप में &lt;b&gt;सेंसर QE कर्व&lt;/b&gt; चाहिए। समस्या यह है
+कि अधिकांश प्रकाशित QE कर्व प्रचार सामग्री होते हैं &amp;mdash; कमरे के तापमान पर
+खुले डाई पर मापे गए, जो अक्सर आपके विशिष्ट सेंसर बैच की स्वतंत्र रूप से सत्यापित
+प्रतिक्रिया के बजाय सर्वोत्तम-स्थिति नमूना दर्शाते हैं। उन्हें आपकी AR कोटिंग, आपकी
+ऑप्टिकल ट्रेन, आपके वायुमंडल या आपकी इलेक्ट्रॉनिक्स श्रृंखला की कोई जानकारी नहीं होती। आप जो कर्व लागू करते हैं वह शायद ही कभी
+वह कर्व होता है जो व्यवहार में आपके कैमरे का वास्तव में होता है।
+&lt;/p&gt;
+&lt;p&gt;
+&lt;b&gt;SSSC QE कर्व को पूरी तरह छोड़ देता है।&lt;/b&gt; इसके बजाय, यह वास्तविक प्रभावी
+सिस्टम थ्रूपुट R(&amp;lambda;) को सीधे आपके छवि डेटा से हल करता है, Gaia XP तारकीय
+स्पेक्ट्रा को कैलिब्रेशन संदर्भ के रूप में उपयोग करके। कोई धारणा नहीं। कोई डेटाशीट नहीं। केवल आपका वास्तविक सिस्टम,
+आपके फ़ील्ड के तारों से अनुभवजन्य रूप से मापा गया।
+&lt;/p&gt;
+ 
+&lt;hr&gt;
+ 
+&lt;h2&gt;यह कैसे काम करता है?&lt;/h2&gt;
+&lt;p&gt;
+प्रत्येक कैलिब्रेटर तारे के लिए, Gaia ने ~330&amp;ndash;1050&amp;nbsp;nm तक एक सतत फ्लक्स स्पेक्ट्रम
+~2.5&amp;nbsp;nm रिज़ॉल्यूशन पर मापा है। SSSC उन स्पेक्ट्रा को आपके फ़िल्टर संप्रेषण
+कर्व्स के माध्यम से एकीकृत करता है और वह R(&amp;lambda;) हल करता है जो Gaia के
+अनुमान और आपके कैमरे के वास्तविक माप के अंतर को सबसे अच्छी तरह समझाता है। मूल समीकरण है:
+&lt;/p&gt;
+&lt;p style="margin-left:20px; font-family:monospace; color:#88ffcc;"&gt;
+measured&lt;sub&gt;c&lt;/sub&gt;(i) = k&lt;sub&gt;c&lt;/sub&gt; &amp;times; &amp;int; flux&lt;sub&gt;i&lt;/sub&gt;(&amp;lambda;)
+&amp;times; T&lt;sub&gt;filter&lt;/sub&gt;(&amp;lambda;) &amp;times; R(&amp;lambda;) d&amp;lambda;
+&lt;/p&gt;
+&lt;p&gt;
+R(&amp;lambda;) वह सब कुछ समाहित करता है जो डेटाशीट आपको नहीं बता सकती: संचालन तापमान पर
+वास्तविक सेंसर QE, दर्पण और लेंस थ्रूपुट, AR कोटिंग, फ़ील्ड फ़्लैटनर,
+और वायुमंडलीय विलोपन। फ़िल्टर संप्रेषण कर्व इनपुट के रूप में बने रहते हैं &amp;mdash;
+निर्माता इनके लिए विश्वसनीय इंटरफ़ेरोमेट्रिक माप प्रकाशित करते हैं।
+&lt;/p&gt;
+ 
+&lt;hr&gt;
+ 
+&lt;h2&gt;बूटस्ट्रैप चरण&lt;/h2&gt;
+&lt;p&gt;
+जैसे-जैसे अधिक कैलिब्रेटर तारे उपलब्ध होते हैं, समाधान की गुणवत्ता स्वतः बेहतर होती है।
+SSSC आपके फ़ील्ड द्वारा समर्थित उच्चतम चरण चुनता है:
+&lt;/p&gt;
+&lt;ul&gt;
+  &lt;li&gt;&lt;span class="stage"&gt;चरण 1 (&amp;lt;50 तारे):&lt;/span&gt;
+      स्केलर प्रति-चैनल गेन k&lt;sub&gt;R&lt;/sub&gt;, k&lt;sub&gt;G&lt;/sub&gt;, k&lt;sub&gt;B&lt;/sub&gt;।
+      यह पारंपरिक स्केलर SPCC के बराबर है &amp;mdash; प्रति चैनल एक एकल श्वेत-संतुलन
+      सुधार। हमेशा आधार रेखा के रूप में चलता है।&lt;/li&gt;
+  &lt;li&gt;&lt;span class="stage"&gt;चरण 2 (50&amp;ndash;200 तारे):&lt;/span&gt;
+      प्रत्येक बैंड के भीतर रंग-निर्भर गेन, ढलान, एफ़ाइन या द्विघात के रूप में फ़िट,
+      इस पर निर्भर कि आपके डेटा का सबसे अच्छा वर्णन कौन करता है। प्रत्येक फ़िल्टर पासबैंड के भीतर
+      प्रमुख तरंगदैर्ध्य निर्भरता को पकड़ता है। SASpro के बहुपद
+      SPCC फ़िट के तुलनीय, जो अधिकांश सामान्य तारा क्षेत्रों पर पहले से ही पारंपरिक स्केलर SPCC गुणवत्ता से
+      बेहतर है &amp;mdash; और SSSC यह बिना किसी QE कर्व धारणा के प्राप्त करता है।&lt;/li&gt;
+  &lt;li&gt;&lt;span class="stage"&gt;चरण 3 (200+ तारे, B&amp;minus;V विस्तार &amp;ge; 1.5):&lt;/span&gt;
+      पीसवाइज़-लीनियर नियंत्रण बिंदुओं पर एक सटीक लीस्ट-स्क्वेयर फ़िट से प्रति चैनल पूर्ण R(&amp;lambda;) आकार हल किया जाता है। गर्म नीले तारे प्रत्येक फ़िल्टर के नीले किनारे को सीमित करते हैं; ठंडे लाल तारे लाल किनारे को सीमित करते हैं। हर रन का समाधान सत्र इतिहास में सहेजा जाता है, जिसे बहु-रात्रि चरण 4 संयोजित करेगा।&lt;/li&gt;
+  &lt;li&gt;&lt;span class="stage future"&gt;चरण 4 (भविष्य &amp;mdash; DR4 + बहु-रात्रि):&lt;/span&gt;
+      वायुमंडल/हार्डवेयर डीकोरिलेशन। अलग-अलग एयरमास पर कई रातों में
+      इमेजिंग करके, R(&amp;lambda;) एक स्थिर हार्डवेयर घटक और एक परिवर्तनशील
+      वायुमंडलीय घटक में अलग हो जाता है। अभिसरण के बाद, आपका अनुभवजन्य रूप से मापा गया QE कर्व
+      स्थायी रूप से लॉक हो जाता है &amp;mdash; कैलिब्रेशन चरण 3+ सटीकता के साथ चरण 2 की गति पर लौट आता है,
+      निर्माता के अनुमान के बजाय आपके वास्तविक कर्व का उपयोग करके।&lt;/li&gt;
+&lt;/ul&gt;
+ 
+&lt;hr&gt;
+ 
+&lt;h2&gt;Gaia DR3 के साथ SSSC आज क्या कर सकता है?&lt;/h2&gt;
+&lt;p&gt;
+Gaia DR3 लगभग G&amp;nbsp;&amp;le;&amp;nbsp;15.5 तक के तारों के लिए सतत XP स्पेक्ट्रा प्रदान करता है।
+एक सामान्य वाइड-फ़ील्ड छवि (0.5&amp;ndash;2&amp;deg; FOV) पर इससे 200&amp;ndash;600
+कैलिब्रेटर तारे मिलते हैं, जो अधिकांश फ़ील्ड के लिए आराम से चरण 3 के दायरे में है।
+&lt;/p&gt;
+&lt;p&gt;
+वास्तविक डेटा पर परीक्षण में, SSSC के तारकीय रंग किसी भी QE कर्व के बिना एक पूर्ण स्पेक्ट्रोफ़ोटोमेट्रिक मानक से 1&amp;ndash;2&amp;nbsp;% के भीतर मेल खाते हैं। चलाए गए हर चरण का अवशिष्ट RMS हर रन पर कैलिब्रेशन गुणवत्ता वॉटरफ़ॉल पैनल में दिखाया जाता है।
+&lt;/p&gt;
+&lt;p class="note"&gt;
+सुझाव: एक ही रिग से कई रातों में ली गई छवियों पर SSSC चलाएँ। हर रन का R(&amp;lambda;) सत्र इतिहास में सहेजा जाता है, जो बहु-रात्रि चरण 4 के लिए तैयार रहता है। कैमरा&amp;nbsp;/&amp;nbsp;रिग लेबल फ़ील्ड इतिहास को प्रति सेंसर अलग करता है ताकि अलग-अलग इमेजिंग ट्रेनों के बीच समाधान आपस में न मिलें।
+&lt;/p&gt;
+ 
+&lt;hr&gt;
+ 
+&lt;h2 class="future"&gt;Gaia DR4 के साथ SSSC क्या करेगा?&lt;/h2&gt;
+&lt;p&gt;
+Gaia DR4 से XP स्पेक्ट्रा के G&amp;nbsp;&amp;le;&amp;nbsp;16.5 तक विस्तार की उम्मीद है, जिससे अधिकांश फ़ील्ड में
+&lt;b&gt;कैलिब्रेटर तारों की संख्या लगभग तीन गुना&lt;/b&gt; हो जाएगी। इसका अर्थ है:
+&lt;/p&gt;
+&lt;ul&gt;
+  &lt;li&gt;जो फ़ील्ड अभी चरण 2 तक पहुँचते हैं, वे विश्वसनीय रूप से चरण 3 तक पहुँचेंगे&lt;/li&gt;
+  &lt;li&gt;16+ नियंत्रण बिंदुओं वाला चरण 3 अच्छी तरह से सीमित हो जाता है (&amp;gt;1000 तारे)&lt;/li&gt;
+  &lt;li&gt;चरण 4 वायुमंडल डीकोरिलेशन संभव हो जाता है &amp;mdash; प्रति सत्र इतने तारे कि
+      R(&amp;lambda;) के एयरमास-निर्भर घटक को हल किया जा सके&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;
+चरण 4 का अंतिम लक्ष्य: बहु-रात्रि डेटा से आपका हार्डवेयर R(&amp;lambda;) अभिसरित हो जाने पर,
+इसे स्थायी रूप से आपके सत्र कैश में सहेजा जाता है। हर बाद का कैलिब्रेशन
+रन उस कर्व को ज्ञात इनपुट के रूप में लोड करता है &amp;mdash; किसी सॉल्वर की आवश्यकता नहीं, चरण 2 की गति,
+अनुभवजन्य रूप से सही सटीकता। कर्व स्वयं को बनाए भी रखता है: दर्पण ऑक्सीकरण,
+सेंसर का पुराना होना, फ़िल्टर परिवर्तन सभी R(&amp;lambda;) में ड्रिफ़्ट के रूप में दिखते हैं और अपडेट शुरू करते हैं।
+&lt;/p&gt;
+ 
+&lt;hr&gt;
+ 
+&lt;h2&gt;संदर्भ&lt;/h2&gt;
+&lt;ul&gt;
+  &lt;li&gt;Riello et al. 2021 &amp;mdash; &lt;i&gt;Gaia EDR3: Photometric content and validation&lt;/i&gt;,
+      A&amp;amp;A 649, A3 &amp;mdash; वह कैलिब्रेशन पाइपलाइन जिसकी SSSC प्रतिकृति बनाता है&lt;/li&gt;
+  &lt;li&gt;Carrasco et al. 2021 &amp;mdash; &lt;i&gt;Gaia photometric science alerts programme&lt;/i&gt;&lt;/li&gt;
+  &lt;li&gt;Fabricius et al. 2021 &amp;mdash; &lt;i&gt;Gaia EDR3: Catalogue validation&lt;/i&gt;&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p class="note" style="margin-top:16px;"&gt;
+SSSC, SetiAstro Suite Pro का हिस्सा है &amp;mdash; www.setiastro.com
+&lt;/p&gt;
+</translation>
+    </message>
+    <message>
+      <source>  ✓ Stage 3 (full R(λ)) solved from {0} stars.
+  Saved to the session history of this filter+camera combination.</source>
+      <translation>  ✓ चरण 3 (पूर्ण R(λ)) {0} तारों से हल किया गया।
+  इस फ़िल्टर+कैमरा संयोजन के सत्र इतिहास में सहेजा गया।</translation>
+    </message>
+    <message>
+      <source>The stars do not follow these filter curves well (scalar fit residual {0:.0%}). Check the filters chosen: an OSC camera behind a UV/IR cut needs the UV/IR-cut curves, or the cut filter as LP/Cut.</source>
+      <translation>तारे इन फ़िल्टर वक्रों का ठीक से पालन नहीं करते (स्केलर फ़िट अवशिष्ट {0:.0%})। चुने गए फ़िल्टर जाँचें: UV/IR कट फ़िल्टर के पीछे OSC कैमरे को UV/IR-कट वक्र चाहिए, या कट फ़िल्टर को LP/Cut के रूप में चुनें।</translation>
+    </message>
+    <message>
+      <source>Calibrated ✓</source>
+      <translation>कैलिब्रेट हो गया ✓</translation>
+    </message>
+    <message>
+      <source>Applied to this image. It turns back into Calibrate when you change a setting,
+switch to another image or undo.</source>
+      <translation>इस छवि पर लागू किया गया। कोई सेटिंग बदलने, दूसरी छवि पर जाने या पूर्ववत करने पर
+यह फिर से “कैलिब्रेट करें” बन जाता है।</translation>
+    </message>
+    <message>
+      <source>Every calibration is saved under a session: the R/G/B filters, LP filters and
+camera / rig name together. Each run is solved on its own stars; the saved
+R(λ) curves and their uncertainties are the record the multi-night Stage 4
+will combine.</source>
+      <translation>हर कैलिब्रेशन एक सत्र के अंतर्गत सहेजा जाता है: R/G/B फ़िल्टर, LP फ़िल्टर और
+कैमरा / रिग नाम मिलकर। हर रन अपने ही तारों पर हल होता है; सहेजे गए
+R(λ) वक्र और उनकी अनिश्चितताएँ वह रिकॉर्ड हैं जिसे बहु-रात्रि चरण 4
+मिलाएगा।</translation>
+    </message>
+    <message>
+      <source>View History…</source>
+      <translation>इतिहास देखें…</translation>
+    </message>
+    <message>
+      <source>Every saved run of this session and the others: the R(λ) curves Stage 3
+measured, the channel gains run by run, and deleting a single bad run</source>
+      <translation>इस सत्र और अन्य सत्रों का हर सहेजा गया रन: चरण 3 द्वारा मापे गए R(λ) वक्र,
+हर रन के चैनल गेन, और किसी एक खराब रन को हटाना</translation>
+    </message>
+    <message>
+      <source>Session history unavailable: {0}</source>
+      <translation>सत्र इतिहास उपलब्ध नहीं: {0}</translation>
+    </message>
+    <message>
+      <source>Session {0}</source>
+      <translation>सत्र {0}</translation>
+    </message>
+    <message>
+      <source>Last: {0}  ·  Stage {1}  ·  {2} stars  ·  RMS {3}</source>
+      <translation>अंतिम: {0}  ·  चरण {1}  ·  {2} तारे  ·  RMS {3}</translation>
+    </message>
+    <message>
+      <source>No runs yet: the first calibration starts this setup's history.</source>
+      <translation>अभी कोई रन नहीं: पहला कैलिब्रेशन इस सेटअप का इतिहास शुरू करेगा।</translation>
+    </message>
+    <message>
+      <source>{0} other session(s) use these filters under a different camera name: see View History.</source>
+      <translation>{0} अन्य सत्र इन फ़िल्टरों का उपयोग किसी दूसरे कैमरा नाम के साथ करते हैं: “इतिहास देखें” देखें।</translation>
+    </message>
+    <message>
+      <source>Name the camera / rig to keep each setup's history apart.</source>
+      <translation>हर सेटअप का इतिहास अलग रखने के लिए कैमरा / रिग को नाम दें।</translation>
+    </message>
+    <message>
+      <source>1 run</source>
+      <translation>1 रन</translation>
+    </message>
+    <message>
+      <source>{0} runs</source>
+      <translation>{0} रन</translation>
+    </message>
+    <message>
+      <source>nights unknown (no DATE-OBS)</source>
+      <translation>रातें अज्ञात (कोई DATE-OBS नहीं)</translation>
+    </message>
+    <message>
+      <source>1 night</source>
+      <translation>1 रात</translation>
+    </message>
+    <message>
+      <source>{0} nights</source>
+      <translation>{0} रातें</translation>
+    </message>
+    <message>
+      <source>{0}, {1}  ·  best: Stage {2} from {3} stars</source>
+      <translation>{0}, {1}  ·  सर्वश्रेष्ठ: चरण {2}, {3} तारों से</translation>
+    </message>
+    <message>
+      <source>LP: {0}</source>
+      <translation>LP: {0}</translation>
+    </message>
   </context>
   <context>
     <name>SSSCLoader</name>
@@ -57994,6 +58751,14 @@ Reload Scripts to see new ones.</source>
       <source>🖱️ &lt;b&gt;Click&lt;/b&gt;: show luminance &amp;nbsp;•&amp;nbsp; &lt;b&gt;Shift+Click&lt;/b&gt;: select that band &amp;nbsp;•&amp;nbsp; &lt;b&gt;Ctrl+Drag&lt;/b&gt;: pan &amp;nbsp;•&amp;nbsp; &lt;b&gt;Alt+Drag&lt;/b&gt;: draw region mask &amp;nbsp;•&amp;nbsp; &lt;b&gt;Wheel&lt;/b&gt;: zoom</source>
       <translation>🖱️ &lt;b&gt;क्लिक&lt;/b&gt;: ल्यूमिनेंस दिखाएं &amp;nbsp;•&amp;nbsp; &lt;b&gt;Shift+क्लिक&lt;/b&gt;: वह बैंड चुनें &amp;nbsp;•&amp;nbsp; &lt;b&gt;Ctrl+खींचें&lt;/b&gt;: पैन &amp;nbsp;•&amp;nbsp; &lt;b&gt;Alt+खींचें&lt;/b&gt;: क्षेत्र मास्क बनाएं &amp;nbsp;•&amp;nbsp; &lt;b&gt;व्हील&lt;/b&gt;: ज़ूम</translation>
     </message>
+    <message>
+      <source>Low:</source>
+      <translation>निम्न:</translation>
+    </message>
+    <message>
+      <source>High:</source>
+      <translation>उच्च:</translation>
+    </message>
   </context>
   <context>
     <name>SerStackerDialog</name>
@@ -58678,6 +59443,10 @@ Thank you for being part of this journey. Clear skies.</source>
     <message>
       <source>{0} of {1} recommended layers</source>
       <translation>{1} में से {0} अनुशंसित लेयर</translation>
+    </message>
+    <message>
+      <source>Close this window. Help &gt; Welcome and Setup opens it again.</source>
+      <translation>यह विंडो बंद करें। सहायता &gt; स्वागत और सेटअप इसे फिर से खोलता है।</translation>
     </message>
   </context>
   <context>
@@ -67156,6 +67925,14 @@ There's nothing to unwarp — the solution is already linear.</source>
       <source>WaveScale Dark Enhancer — Preset</source>
       <translation>WaveScale Dark Enhancer — प्रीसेट</translation>
     </message>
+    <message>
+      <source>Amount:</source>
+      <translation>मात्रा:</translation>
+    </message>
+    <message>
+      <source>Blend with the original image: 100% is the full effect, 0% leaves it unchanged.</source>
+      <translation>मूल छवि के साथ मिश्रण: 100% पूरा प्रभाव है, 0% इसे अपरिवर्तित छोड़ता है।</translation>
+    </message>
   </context>
   <context>
     <name>WaveScaleDarkEnhancerDialogPro</name>
@@ -67262,6 +68039,22 @@ Drop directly on an image to apply them headlessly.</source>
     <message>
       <source>Zoom Out</source>
       <translation>ज़ूम आउट</translation>
+    </message>
+    <message>
+      <source>Amount:</source>
+      <translation>मात्रा:</translation>
+    </message>
+    <message>
+      <source>Amount (0-100%)
+
+Blends the finished result with the original image. 100% is the full effect, 0% leaves the image unchanged.
+
+Changing it after a Preview re-blends the preview without recomputing. Default: 100%.</source>
+      <translation>मात्रा (0-100%)
+
+अंतिम परिणाम को मूल छवि के साथ मिलाता है। 100% पूरा प्रभाव है, 0% छवि को अपरिवर्तित छोड़ता है।
+
+पूर्वावलोकन के बाद इसे बदलने पर बिना दोबारा गणना किए पूर्वावलोकन फिर से मिलाया जाता है। डिफ़ॉल्ट: 100%।</translation>
     </message>
   </context>
   <context>
@@ -67398,6 +68191,22 @@ Higher -&gt; larger-scale structure enhanced. Default: 5.</source>
       <source>Zoom Out</source>
       <translation>ज़ूम आउट</translation>
     </message>
+    <message>
+      <source>Amount:</source>
+      <translation>मात्रा:</translation>
+    </message>
+    <message>
+      <source>Amount (0-100%)
+
+Blends the finished result with the original image. 100% is the full effect, 0% leaves the image unchanged.
+
+Changing it after a Preview re-blends the preview without recomputing. Default: 100%.</source>
+      <translation>मात्रा (0-100%)
+
+अंतिम परिणाम को मूल छवि के साथ मिलाता है। 100% पूरा प्रभाव है, 0% छवि को अपरिवर्तित छोड़ता है।
+
+पूर्वावलोकन के बाद इसे बदलने पर बिना दोबारा गणना किए पूर्वावलोकन फिर से मिलाया जाता है। डिफ़ॉल्ट: 100%।</translation>
+    </message>
   </context>
   <context>
     <name>WaveScaleHDRPresetDialog</name>
@@ -67420,6 +68229,14 @@ Higher -&gt; larger-scale structure enhanced. Default: 5.</source>
     <message>
       <source>WaveScale HDR — Preset</source>
       <translation>WaveScale HDR — प्रीसेट</translation>
+    </message>
+    <message>
+      <source>Amount:</source>
+      <translation>मात्रा:</translation>
+    </message>
+    <message>
+      <source>Blend with the original image: 100% is the full effect, 0% leaves it unchanged.</source>
+      <translation>मूल छवि के साथ मिश्रण: 100% पूरा प्रभाव है, 0% इसे अपरिवर्तित छोड़ता है।</translation>
     </message>
   </context>
   <context>
@@ -73714,6 +74531,113 @@ Drop directly on an image to apply them headlessly.</source>
 Drop it on an image to open {0} for that image.</source>
       <translation>{0} शॉर्टकट बनाने के लिए कैनवास पर खींचें, या इसे जोड़ने के लिए आवश्यक उपकरण पर खींचें।
 उस छवि के लिए {0} खोलने के लिए इसे किसी छवि पर छोड़ें।</translation>
+    </message>
+  </context>
+  <context>
+    <name>SSSCHistoryDialog</name>
+    <message>
+      <source>1 run</source>
+      <translation>1 रन</translation>
+    </message>
+    <message>
+      <source>{0} runs</source>
+      <translation>{0} रन</translation>
+    </message>
+    <message>
+      <source>nights unknown (no DATE-OBS)</source>
+      <translation>रातें अज्ञात (कोई DATE-OBS नहीं)</translation>
+    </message>
+    <message>
+      <source>1 night</source>
+      <translation>1 रात</translation>
+    </message>
+    <message>
+      <source>{0} nights</source>
+      <translation>{0} रातें</translation>
+    </message>
+    <message>
+      <source>{0}, {1}  ·  best: Stage {2} from {3} stars</source>
+      <translation>{0}, {1}  ·  सर्वश्रेष्ठ: चरण {2}, {3} तारों से</translation>
+    </message>
+    <message>
+      <source>LP: {0}</source>
+      <translation>LP: {0}</translation>
+    </message>
+    <message>
+      <source>SSSC Session History</source>
+      <translation>SSSC सत्र इतिहास</translation>
+    </message>
+    <message>
+      <source>Session:</source>
+      <translation>सत्र:</translation>
+    </message>
+    <message>
+      <source>Date</source>
+      <translation>तिथि</translation>
+    </message>
+    <message>
+      <source>Image</source>
+      <translation>छवि</translation>
+    </message>
+    <message>
+      <source>Stage</source>
+      <translation>चरण</translation>
+    </message>
+    <message>
+      <source>Stars</source>
+      <translation>तारे</translation>
+    </message>
+    <message>
+      <source>B−V range</source>
+      <translation>B−V सीमा</translation>
+    </message>
+    <message>
+      <source>RMS</source>
+      <translation>RMS</translation>
+    </message>
+    <message>
+      <source>White ref.</source>
+      <translation>श्वेत संदर्भ</translation>
+    </message>
+    <message>
+      <source>Airmass</source>
+      <translation>वायु द्रव्यमान</translation>
+    </message>
+    <message>
+      <source>DATE-AVG / DATE-OBS from the image header, else when the run was calibrated</source>
+      <translation>छवि हेडर से DATE-AVG / DATE-OBS, अन्यथा वह समय जब रन कैलिब्रेट किया गया</translation>
+    </message>
+    <message>
+      <source>Delete Run</source>
+      <translation>रन हटाएँ</translation>
+    </message>
+    <message>
+      <source>Remove the selected run(s) from this session's history</source>
+      <translation>चयनित रन को इस सत्र के इतिहास से हटाएँ</translation>
+    </message>
+    <message>
+      <source>Close</source>
+      <translation>बंद करें</translation>
+    </message>
+    <message>
+      <source>(current settings)</source>
+      <translation>(वर्तमान सेटिंग्स)</translation>
+    </message>
+    <message>
+      <source>No runs saved for this session yet.</source>
+      <translation>इस सत्र के लिए अभी कोई रन सहेजा नहीं गया है।</translation>
+    </message>
+    <message>
+      <source>Select a run in the table first.</source>
+      <translation>पहले तालिका में एक रन चुनें।</translation>
+    </message>
+    <message>
+      <source>Delete {0} run(s) from this session's history? This cannot be undone.</source>
+      <translation>इस सत्र के इतिहास से {0} रन हटाएँ? इसे पूर्ववत नहीं किया जा सकता।</translation>
+    </message>
+    <message>
+      <source>Error</source>
+      <translation>त्रुटि</translation>
     </message>
   </context>
 </TS>

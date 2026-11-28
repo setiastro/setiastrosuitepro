@@ -247,6 +247,15 @@ class FileMixin:
         return None
 
     @staticmethod
+    def _with_ext(stem: str, ext: str) -> str:
+        """stem + ext, except that a compressed FITS keeps an inner FITS
+        extension: "name.fit.fz", the spelling Siril and fpack write."""
+        if (ext or "").lower() == ".fz" and \
+                os.path.splitext(stem)[1].lower() not in (".fit", ".fits", ".fts"):
+            return stem + ".fit.fz"
+        return stem + ext
+
+    @staticmethod
     def _doc_original_ext(doc) -> str:
         """The extension the document was opened from, '' if unknown."""
         meta = (getattr(doc, "metadata", {}) or {})
@@ -569,6 +578,7 @@ class FileMixin:
             "32-bit floating point",
             current_jpeg_quality=None,
             settings=self.settings,
+            row_order_option=False,     # bundles are written top-down
         )
         if dlg.exec() != dlg.DialogCode.Accepted:
             return
@@ -641,6 +651,13 @@ class FileMixin:
         except Exception:
             pass
 
+        self._open_image_paths(paths)
+
+    def _open_image_paths(self, paths):
+        """Open image files the File > Open way: PDFs, the .syq busy popup, one
+        warning per file that fails (the rest still open), recent images, and
+        cascade placement. Files dropped on the workspace or on a view come
+        here too (shortcuts.ShortcutCanvas.open_dropped_files)."""
         # ---- BEGIN batch open (stable placement) ----
         try:
             self._mdi_begin_open_batch(mode="cascade")
@@ -774,7 +791,9 @@ class FileMixin:
                         "pdf_page": i + 1,
                         "pdf_dpi": dpi,
                     }
-                    self.docman.open_array(arr, metadata=meta, title=title)
+                    page_doc = self.docman.open_array(arr, metadata=meta, title=title)
+                    if page_doc is not None:
+                        page_doc.saved_to_file = True   # the PDF on disk has it
                     QApplication.processEvents()
                 except Exception as e:
                     print(f"[PDF] Page {i + 1} failed: {e}")
@@ -794,6 +813,7 @@ class FileMixin:
 
         filters = (
             "FITS (*.fits *.fit *.fts);;"
+            "Compressed FITS (*.fz);;"
             "XISF (*.xisf);;"
             "SYQ (SyQon) (*.syq);;"
             "TIFF (*.tif *.tiff);;"
@@ -842,7 +862,7 @@ class FileMixin:
         _orig_ext = self._doc_original_ext(doc)
         _sel_filter = self._filter_for_ext(filters, _orig_ext)
         if _sel_filter:
-            suggested_safe = suggested_safe + _orig_ext
+            suggested_safe = self._with_ext(suggested_safe, _orig_ext)
         suggested_path = os.path.join(candidate_dir, suggested_safe)
 
         # --- Open dialog ----------------------------------------
@@ -885,6 +905,7 @@ class FileMixin:
 
         # --- Bit depth selection ----------------------------------------
         from setiastro.saspro.save_options import ExportDialog
+        from setiastro.saspro.doc_manager import document_source_bottom_up
         current_bd = doc.metadata.get("bit_depth")
         current_jq = (doc.metadata or {}).get("jpeg_quality", None)
 
@@ -892,6 +913,7 @@ class FileMixin:
             self, ext_norm, current_bd,
             current_jpeg_quality=current_jq,
             settings=self.settings,   # so it remembers per-format defaults
+            source_bottom_up=document_source_bottom_up(doc.metadata),
         )
         if dlg.exec() != dlg.DialogCode.Accepted:
             return
@@ -1072,6 +1094,11 @@ class FileMixin:
 
             def _on_proj_save_ok():
                 dlg.close()
+                for d in docs:   # in the project file now (Exit's "never saved")
+                    try:
+                        d.saved_to_file = True
+                    except Exception:
+                        pass
                 self._log("Project saved.")
                 self._add_recent_project(path)
 
@@ -1183,6 +1210,7 @@ class FileMixin:
 
         fmt_map = {
             "fits":  ("FITS (*.fits *.fit *.fts)",         ".fits"),
+            "fz":    ("Compressed FITS (*.fz)",           ".fz"),
             "xisf":  ("XISF (*.xisf)",                   ".xisf"),
             "syq":   ("SYQ (SyQon) (*.syq)",             ".syq"),
             "tiff":  ("TIFF (*.tif *.tiff)",              ".tiff"),
@@ -1207,6 +1235,7 @@ class FileMixin:
         # Build all filters with the chosen one first
         all_filters = [
             "FITS (*.fits *.fit *.fts)",
+            "Compressed FITS (*.fz)",
             "XISF (*.xisf)",
             "SYQ (SyQon) (*.syq)",
             "TIFF (*.tif *.tiff)",
@@ -1243,7 +1272,7 @@ class FileMixin:
         # Suggested filename with pre-applied extension
         suggested = _best_doc_name(doc)
         suggested = os.path.splitext(suggested)[0]
-        suggested = _sanitize_filename(suggested) + ext
+        suggested = self._with_ext(_sanitize_filename(suggested), ext)
         suggested_path = os.path.join(candidate_dir, suggested)
 
         path, chosen_filter = QFileDialog.getSaveFileName(
@@ -1278,6 +1307,7 @@ class FileMixin:
             self._log(f"Adjusted filename for safety:\n  {before}\n-> {path}")
 
         from setiastro.saspro.save_options import ExportDialog
+        from setiastro.saspro.doc_manager import document_source_bottom_up
         current_bd = meta.get("bit_depth")
         current_jq = meta.get("jpeg_quality", None)
 
@@ -1285,6 +1315,7 @@ class FileMixin:
             self, ext_norm, current_bd,
             current_jpeg_quality=current_jq,
             settings=self.settings,
+            source_bottom_up=document_source_bottom_up(meta),
         )
         if dlg.exec() != dlg.DialogCode.Accepted:
             return

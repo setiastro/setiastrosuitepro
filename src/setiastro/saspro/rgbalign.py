@@ -1032,10 +1032,15 @@ class RGBAlignDialog(QDialog):
         btns.addWidget(self.btn_reset)
         btns.addWidget(self.btn_close)
         btns.addStretch(1)
-        from setiastro.saspro.shortcuts import ShortcutGrip
-        btns.addWidget(ShortcutGrip("rgb_align", self))
-        btns.addWidget(make_help_button("rgb_align", self))
         lay.addLayout(btns)
+        # Grip + help: their own row at the bottom
+        from setiastro.saspro.shortcuts import ShortcutGrip
+        grip_row = QHBoxLayout()
+        grip_row.setContentsMargins(0, 0, 0, 0)
+        grip_row.addWidget(ShortcutGrip("rgb_align", self))
+        grip_row.addStretch(1)
+        grip_row.addWidget(make_help_button("rgb_align", self))
+        lay.addLayout(grip_row)
 
         self.btn_run.clicked.connect(self._start_align)
         self.btn_cancel.clicked.connect(self._cancel_align)

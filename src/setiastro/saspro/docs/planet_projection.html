@@ -66,7 +66,7 @@
 
 <p>The three stereo modes (Parallel, Cross-eye, Wiggle) and the Anaglyph all share the same underlying <b>stereo-pair generation</b> — they just differ in how the pair is composited for display. Interactive 3D and Galaxy Polar View generate their outputs via different pipelines.</p>
 
-<h2>2. The four planet types</h2>
+<h2>2. The five planet types</h2>
 
 <table>
 <tr><th>Type</th><th>When to use</th></tr>
@@ -74,9 +74,35 @@
 <tr><td><b>Saturn (Sphere + Rings)</b></td><td>Saturn — adds an elliptical annulus for the rings with front/back occlusion by the planet body.</td></tr>
 <tr><td><b>Pseudo surface (Height from brightness)</b></td><td>Lunar craters, solar granulation, or any surface where image brightness correlates with 3D height. Also works beautifully on nebulae for an artistic "cosmic landscape" effect.</td></tr>
 <tr><td><b>Galaxy (Disk deprojection)</b></td><td>Edge-on or inclined galaxies where you want to see the disk structure from above. Also exposes PA / tilt controls that let the Interactive 3D export produce a proper tilted galaxy mesh.</td></tr>
+<tr><td><b>Moon (true relief)</b></td><td>Any lunar image, whole disc or close-up, mono or colour. Your image is laid on the Moon's real terrain and opened in an interactive 3D explorer (see below). This type has its own output, so the Output dropdown is hidden.</td></tr>
 </table>
 
-<p>The planet type and the output mode combine freely: for example, "Saturn + Interactive 3D" gives you a Plotly sphere with real ring geometry you can orbit, while "Pseudo surface + Wiggle" gives you a swaying heightmap of your lunar close-up.</p>
+<p>The other planet types and the output modes combine freely: for example, "Saturn + Interactive 3D" gives you a Plotly sphere with real ring geometry you can orbit, while "Pseudo surface + Wiggle" gives you a swaying heightmap of your lunar close-up.</p>
+
+<h3>Moon (true relief): the 3D Moon explorer</h3>
+
+<p>Instead of guessing height from brightness, the Moon type places your image on the lunar globe and gives every pixel the true height of the spot it shows. The result opens in your web browser as a 3D landscape you can turn, zoom into and fly over.</p>
+
+<ul>
+  <li><b>Placement.</b> If you have run <b>Lunar Solver</b> on the image, its stored solution is used and nothing is solved again. Otherwise the image is solved here from its capture time (read from the header, EXIF or a SharpCap file name), or blind with <b>Date unknown</b> when there is none.</li>
+  <li><b>Heights.</b> <b>LOLA terrain</b> is NASA's Lunar Reconnaissance Orbiter laser-altimeter map, downloaded once and cached (about 35 MB up front, then about 12 MB per 4° band of latitude your close-ups cover). <b>Derived from this image</b> measures relief from the shadows and shading near the terminator. It is experimental, works best on a linear unsharpened stack, and is scored against LOLA in the status line.</li>
+  <li><b>Exaggeration</b> sets the starting height scale (lunar relief is only about 0.3% of the radius; ×5 to ×10 makes it easy to see). The viewer has its own slider. Horizontal distances are always true.</li>
+  <li><b>Terrain vertices</b> sets the mesh detail. Your picture is always shown at full resolution as the surface texture.</li>
+  <li><b>Show the rest of the Moon</b> completes the globe around your image from LOLA heights and Clementine albedo, lit by the Sun of your capture time and matched to your image's brightness, so a close-up sits on a whole Moon.</li>
+  <li><b>Save 3D Viewer…</b> keeps the explorer as one HTML file that opens offline in any modern browser and can be shared. <b>Save Mesh…</b> writes the textured terrain as PLY + OBJ for Blender or MeshLab.</li>
+</ul>
+
+<div class="keys">
+<b>Explorer controls.</b>
+<br><b>Left-drag</b> — rotate around the spot under the cursor (around the whole Moon when you are far out).
+<br><b>Right-drag</b> or <b>Shift+drag</b> — grab the surface and move across it.
+<br><b>Wheel</b> — zoom toward the cursor.
+<br><b>Middle-drag</b> or <b>Ctrl+drag</b> — look around from where you are.
+<br><b>W A S D / arrow keys</b> — fly over the surface; <b>Q / E</b> down and up; hold <b>Shift</b> to go faster.
+<br><b>Double-click</b> — fly to that spot.
+<br><b>1 2 3 4</b> — From Earth (as your telescope saw it), Tilted, Top down (north up), Whole Moon. <b>H</b> shows the controls.
+<br>The panel also has Brightness and Gamma, <b>Light up shadows</b> (reveals the terrain in shadowed and night-side areas), the rest-of-the-Moon switch and brightness, and <b>Save picture</b>. The status bar shows the latitude, longitude and height under the cursor.
+</div>
 
 <h2>3. Common workflow</h2>
 

@@ -1012,12 +1012,6 @@ class LiveStackWindow(QDialog):
         spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         tb.addWidget(spacer)
 
-        # In-tool documentation button, left of the Settings wrench
-        self.btn_help = make_help_button("live_stacking", self)
-        from setiastro.saspro.shortcuts import ShortcutGrip
-        tb.addWidget(ShortcutGrip("live_stacking", self))
-        tb.addWidget(self.btn_help)
-
         # — Replace the QAction “wrench” with a styled QToolButton —
         self.wrench_button = QToolButton()
         self.wrench_button.setIcon(QIcon(self._wrench_path))
@@ -1143,6 +1137,16 @@ class LiveStackWindow(QDialog):
         self.snr_label.setWordWrap(True)
         self.snr_label.setStyleSheet("color: #e0c060;")
         main_layout.addWidget(self.snr_label)
+
+        # Grip + help: their own row at the bottom
+        from setiastro.saspro.shortcuts import ShortcutGrip
+        self.btn_help = make_help_button("live_stacking", self)
+        grip_row = QHBoxLayout()
+        grip_row.setContentsMargins(0, 0, 0, 0)
+        grip_row.addWidget(ShortcutGrip("live_stacking", self))
+        grip_row.addStretch(1)
+        grip_row.addWidget(self.btn_help)
+        main_layout.addLayout(grip_row)
 
         # Finalize
         self.setLayout(main_layout)

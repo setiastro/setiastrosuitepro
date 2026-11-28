@@ -314,10 +314,6 @@ class RGBCombinationDialogPro(QDialog):
         self.btn_reset.clicked.connect(self._reset_to_factory)
 
         btns = QHBoxLayout()
-        self.btn_help = make_help_button("rgb_combination", self)
-        from setiastro.saspro.shortcuts import ShortcutGrip
-        btns.addWidget(ShortcutGrip("rgb_combine", self))
-        btns.addWidget(self.btn_help)
         btns.addStretch(); btns.addWidget(self.btn_combine); btns.addWidget(self.btn_reset); btns.addWidget(self.btn_cancel)
 
         # ── layout: two columns, so the luminance warning + advanced options
@@ -346,6 +342,15 @@ class RGBCombinationDialogPro(QDialog):
         L = QVBoxLayout(self)
         L.addLayout(cols, 1)
         L.addLayout(btns)
+        # Grip + help: their own row at the bottom
+        from setiastro.saspro.shortcuts import ShortcutGrip
+        self.btn_help = make_help_button("rgb_combination", self)
+        grip_row = QHBoxLayout()
+        grip_row.setContentsMargins(0, 0, 0, 0)
+        grip_row.addWidget(ShortcutGrip("rgb_combine", self))
+        grip_row.addStretch(1)
+        grip_row.addWidget(self.btn_help)
+        L.addLayout(grip_row)
 
         self.mode_group.buttonClicked.connect(self._refresh_mode)
         self._populate_views()

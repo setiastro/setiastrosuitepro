@@ -122,13 +122,13 @@ Zoom range is 5% to 2000%.
 <table>
   <tr><th>Mode</th><th>What it tracks</th><th>Use for</th></tr>
   <tr><td><b>Planetary</b></td><td>The brightness centroid of pixels above a threshold.</td><td>Planetary discs on a dark sky (Jupiter, Saturn, Mars, Venus, lunar craters at high mag).</td></tr>
-  <tr><td><b>Surface</b></td><td>A user-picked anchor patch via NCC + phase correlation.</td><td>The Moon, Sun, or any object filling a large fraction of the frame where no clean disc edge exists.</td></tr>
+  <tr><td><b>Surface</b></td><td>A user-picked anchor patch, found anywhere in each frame by NCC, so jumps are followed.</td><td>The Moon, Sun, or any object filling a large fraction of the frame where no clean disc edge exists.</td></tr>
   <tr><td><b>Off</b></td><td>No alignment &mdash; frames are stacked where they land.</td><td>Pre-aligned data (e.g., an aligned SER exported from a previous Stacker run) or static test cases.</td></tr>
 </table>
 <p>Changing modes updates the preview overlays and the anchor-label status immediately. Surface mode without an anchor shows a red <b>REQUIRED</b> warning until you set one.</p>
 
 <h2>9. Setting the surface anchor</h2>
-<p>Surface tracking needs an anchor &mdash; a small, high-contrast patch (a crater rim, a prominent sunspot, a filament tip) that SASpro can lock onto across every frame. To set it:</p>
+<p>Surface tracking needs an anchor &mdash; a distinctive, high-contrast patch (a crater with its rim, a sunspot group, a filament tip) that SASpro can find in every frame. The stacker searches the whole frame for it, so pick something unlike its surroundings and away from the frame edge: if the video drifts or jumps the anchor out of view, those frames are dropped. Small anchors are grown (to at least 32&nbsp;px, or 12&nbsp;% of the frame's short side), and each side is capped at 60&nbsp;% of the frame so there is room to search. To set it:</p>
 <p><b>Ctrl+Shift+drag</b> a rectangle on the preview (on macOS: <b>⌃⇧-drag</b> &mdash; the Control key, not Command). A blue rubber-band distinguishes the anchor from the green ROI rectangle. On release, the anchor's position and size are stored in <i>ROI-space</i>, and the anchor label at the bottom-right turns green with <code>x, y, w, h</code>.</p>
 <p>While Surface mode is active, the anchor is drawn as a translucent blue outlined rectangle on top of the live preview so you can see what's actually being tracked. If you move the ROI, the anchor overlay still renders correctly &mdash; see &sect;13.4 for how ROI-space is defined.</p>
 <div class="warn"><b>macOS mouse gestures.</b> macOS Qt swaps Control↔Meta, and AppKit delivers Ctrl+LeftClick as RightButton. SASpro accepts <b>⌃⇧-drag</b> (physical Control+Shift), <b>⌘⇧-drag</b> (Command+Shift), and <b>Shift + right-drag</b> as equivalent anchor gestures, so whichever your muscle memory produces will work.</div>

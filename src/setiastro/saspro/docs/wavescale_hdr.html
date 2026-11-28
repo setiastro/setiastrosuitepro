@@ -45,7 +45,8 @@ but it has been squeezed into such a narrow luminance range near
 unity that it reads to the eye as featureless white. WaveScale HDR
 decomposes the luminance into starlet wavelet planes, amplifies the
 fine-detail planes <i>only where the image is bright</i>, aligns
-midtones so the overall look doesn't shift, and finally applies a
+midtones so the overall look doesn't shift, holds back the boost
+wherever it would push a patch past white, and finally applies a
 gentle dimming curve that pulls the result back down into display
 range. The lost detail reappears without destroying the dark
 background.</p>
@@ -67,8 +68,10 @@ background.</p>
       the original so untouched regions stay untouched.</li>
   <li>Use <b>Show Original</b> to A/B toggle; iterate on the sliders
       and press Preview again as needed.</li>
-  <li><b>Apply to Document</b> commits. The dialog stays open so you
-      can run on another image, or close.</li>
+  <li>Set <b>Amount</b> to taste &mdash; it blends the result back
+      with the original, and the preview follows it without
+      recomputing.</li>
+  <li><b>Apply to Document</b> commits and closes the tool.</li>
 </ol>
 
 <h2>2. HDR controls</h2>
@@ -89,7 +92,7 @@ kilopixel-scale structure.</p>
       of pixels inside a bright region.</li>
 </ul>
 <p>Also drives the automatic dimming gamma applied at the end
-(&sect;&nbsp;6.6), so more scales means more highlight-taming after
+(&sect;&nbsp;6.7), so more scales means more highlight-taming after
 the amplification.</p>
 
 <h3>Coarse Compression</h3>
@@ -143,6 +146,19 @@ is white &mdash; everything outside that will be left alone, which
 is exactly what you want for the background sky and the fainter
 outer arms.</div>
 
+<h3>Amount</h3>
+<p>Slider, 0&ndash;100%, default 100%. How much of the finished
+result to keep: the result is blended with the original image,
+<code>(1&nbsp;&minus;&nbsp;a)&middot;original&nbsp;+&nbsp;a&middot;result</code>.
+100% is the full effect (exactly what the tool produced before
+Amount existed); 0% leaves the image unchanged; 50% is halfway
+between.</p>
+<p>Amount does not change what the tool computes, only how much of
+it lands, so moving it after a Preview re-blends the preview at once
+without re-running the wavelet pipeline. It is the easy way to dial
+back a result that is right in character but too strong, without
+re-tuning Coarse Compression and the mask.</p>
+
 <h2>3. The HDR Mask window</h2>
 <p>A small 400&times;400 side window that appears when the dialog
 opens. It shows the current effective mask &mdash; the luminance
@@ -174,19 +190,28 @@ press flips back. The side mask window is unaffected.</p>
 
 <h3>Apply to Document</h3>
 <p>Commits the current preview to the document as an undoable edit
-named &ldquo;WaveScale HDR&rdquo;, with the current three slider
-values stored as its preset. The dialog does <i>not</i> close
-afterward &mdash; you can switch to another open document and run
-again with the same (or edited) settings. <b>Reset</b> returns all
+named &ldquo;WaveScale HDR&rdquo;, at the current Amount, with the
+four slider values (Amount included) stored as its preset, and then
+closes the tool. To run the same settings on another image, drag the
+preset grip onto it (&sect;&nbsp;5) or use Replay Last Action.
+<b>Reset</b> returns all
 sliders to their defaults and clears the preview; <b>Close</b>
 discards everything.</p>
 
 <h2>5. Preset grip</h2>
-<p>The handle at the bottom-left carries the current three slider
-values and can be dragged onto the canvas to make a shortcut tile,
-or dropped onto an image to apply those settings headlessly.
-Double-clicking the tile reopens this dialog with the settings
-pre-filled.</p>
+<p>The handle at the bottom-left carries the current four slider
+values (Amount included) and can be dragged onto the canvas to make
+a shortcut tile, or dropped onto an image to apply those settings
+headlessly. Double-clicking the tile reopens this dialog with the
+settings pre-filled; the tile's preset editor has the same four
+settings, Amount as a percentage.</p>
+<p>In scripts and on the command line the preset keys are
+<code>n_scales</code>, <code>compression_factor</code>,
+<code>mask_gamma</code> and <code>amount</code> (0&ndash;1, e.g.
+<code>{'amount': 0.6}</code> for 60%; <code>--amount 0.6</code> on
+the command line). A shortcut or preset saved before Amount existed
+has no <code>amount</code> and runs at full strength, exactly as it
+did before.</p>
 
 <h2>6. Technical details</h2>
 <p class="tech-lead">All processing on float32. Luminance channel is
@@ -201,7 +226,7 @@ non-destructive right up to the final mask-blended composite.</p>
                                   ↓
                               reconstruct L′  →  midtone align  →  put back into Lab
                                   ↓
-                              Lab → RGB  →  dimming curve  →  mask-blend with original  →  preview</div>
+                              Lab → RGB  →  headroom limit  →  dimming curve  →  mask-blend with original  →  Amount blend  →  preview</div>
 
 <h3>6.2 Luminance mask</h3>
 <p>The image's L* channel (0&ndash;100) is normalised and raised to
@@ -274,26 +299,63 @@ coarse residual are summed back to a new L*:</p>
 regions. To keep the overall tonal character consistent, SASpro
 rescales <code>L'</code> so its median matches the original:</p>
 <div class="matheq-hero">L'' \;=\; L' \,\cdot\, \frac{\mathrm{median}(L^{*})}{\mathrm{median}(L')}</div>
-<p>and clips to [0, 100]. The median is used because it's robust
-against the small handful of pixels that got pushed well past
-100&nbsp;&mdash; a mean would be dragged upward by them, defeating
-the alignment.</p>
+<p>The median is used because it's robust against the small handful
+of pixels that got pushed well past 100&nbsp;&mdash; a mean would be
+dragged upward by them, defeating the alignment. Those pixels are not
+left clipped at 100: &sect;&nbsp;6.6 brings them back into range.</p>
 
-<h3>6.6 Automatic dimming curve</h3>
-<p>Even after midtone alignment, highlights that got boosted hard in
-the detail planes can still clip against unity. Rather than hard-clip
-them, SASpro applies a global gamma to the whole RGB output after
-converting back from Lab:</p>
+<h3>6.6 Headroom limiter</h3>
+<p>Because every plane is at least doubled, a bright patch can be
+pushed past what it can display: <code>L''</code> above 100, or, in a
+strongly coloured patch, one RGB channel above 1 before
+<code>L''</code> even reaches 100. Clipped there, the patch would come
+out as a flat, featureless blob (often shifted toward yellow or cyan)
+in the middle of structure the tool has just opened up, and the
+dimming curve (&sect;&nbsp;6.7) cannot rescue it, because
+<code>1<sup>g</sup>&nbsp;=&nbsp;1</code>.</p>
+<p>So before the dimming curve, SASpro finds, for each pixel that
+would overshoot, the highest L* its own colour can display (its
+ceiling <code>L<sub>max</sub></code>, at the pixel's own a* and b*),
+and scales the <i>added</i> detail back toward the original just far
+enough:</p>
+<div class="matheq-hero">L''' \;=\; L^{*} \;+\; g\,(L'' - L^{*}),\qquad g \;\leq\; \frac{L_{\max} - L^{*}}{L'' - L^{*}}</div>
+<p>The gain <code>g</code> is a smooth map, not a per-pixel factor. It
+takes the strictest requirement in each 4&times;4 block, spreads it
+about 8&ndash;12 pixels and feathers it, so the whole neighbourhood of
+an overshoot is scaled down together and keeps its internal contrast.
+A per-pixel limit would land every overshooting pixel on the ceiling:
+the same flat blob, one notch darker. Two details:</p>
+<ul>
+  <li>The base is the original L*, not the median-aligned one. The
+      alignment ratio alone can lift the near-white rim of a bright
+      star to white, which is what made bright stars bloat into flat
+      disks.</li>
+  <li>Pixels already at their ceiling in the original (saturated star
+      cores) are simply held there and do not steer <code>g</code>, so
+      one burnt-out core does not dim its surroundings.</li>
+</ul>
+<p>Everywhere else <code>g&nbsp;=&nbsp;1</code> and the result is
+exactly what it was without the limiter. On typical images it changes
+well under 10% of the pixels, around bright stars and the brightest
+knots.</p>
+
+<h3>6.7 Automatic dimming curve</h3>
+<p>Highlights that got boosted hard in the detail planes still sit
+high after midtone alignment. To pull them back down, SASpro applies
+a global gamma to the whole RGB output after converting back from
+Lab:</p>
 <div class="matheq">g \;=\; 1 \;+\; 0.2\,n</div>
 <div class="matheq-hero">\mathrm{RGB}_{\mathrm{out}} \;=\; \mathrm{clip}(\mathrm{RGB},\,0,\,1)^{\,g}</div>
 <p>The dimming exponent scales with the number of wavelet scales
 precisely because more scales means more overall amplification across
 the pipeline &mdash; so with 5 scales <code>g&nbsp;=&nbsp;2.0</code>,
 with 10 scales <code>g&nbsp;=&nbsp;3.0</code>. Larger <code>g</code>
-pulls highlights down harder, keeping the output in range even on
-aggressive settings.</p>
+pulls highlights down harder on aggressive settings. A gamma cannot
+lower a pixel that is already at 1
+(<code>1<sup>g</sup>&nbsp;=&nbsp;1</code>); keeping pixels off 1 in
+the first place is the limiter's job (&sect;&nbsp;6.6).</p>
 
-<h3>6.7 Mask-blended composite</h3>
+<h3>6.8 Mask-blended composite</h3>
 <p>The gamma-dimmed output of the pipeline (call it
 <code>RGB<sub>transformed</sub></code>) is blended with the original
 input through the same mask that drove the amplification:</p>
@@ -303,11 +365,21 @@ input through the same mask that drove the amplification:</p>
 regions &mdash; where <code>m<sub>eff</sub>&nbsp;&asymp;&nbsp;1</code>
 &mdash; get the full transformed version. The transitions follow
 the mask shape, which the user controls via gamma, so you can
-confine the effect to arbitrarily narrow ranges of luminance.
-The composite is the preview you see in the main view and what gets
-written to the document on Apply.</p>
+confine the effect to arbitrarily narrow ranges of luminance.</p>
 
-<h3>6.8 Mono inputs</h3>
+<h3>6.9 Amount</h3>
+<p>The mask-blended composite is then blended once more with the
+original, by the Amount slider <code>a</code>&nbsp;&isin;&nbsp;[0,&nbsp;1]:</p>
+<div class="matheq-hero">\mathrm{final} \;=\; (1 - a)\,\mathrm{original} \;+\; a\,\mathrm{out}</div>
+<p>Substituting &sect;&nbsp;6.8, this is the mask blend with its
+weight scaled by <code>a</code>:
+<code>final&nbsp;=&nbsp;original&nbsp;+&nbsp;a&middot;m<sub>eff</sub>&middot;(transformed&nbsp;&minus;&nbsp;original)</code>.
+At <code>a&nbsp;=&nbsp;1</code> the composite is returned untouched,
+so a full-strength run is identical to the tool before Amount
+existed. <code>final</code> is the preview you see in the main view
+and what gets written to the document on Apply.</p>
+
+<h3>6.10 Mono inputs</h3>
 <p>Grayscale and single-channel inputs are promoted to three
 identical channels for processing (the Lab conversion then produces
 a nonzero L* and zero a*/b*, which the pipeline handles correctly),

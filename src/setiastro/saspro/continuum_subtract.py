@@ -1357,12 +1357,18 @@ class ContinuumSubtractTab(QWidget):
         self.wb_diag_button.clicked.connect(self._show_wb_diagnostics)
         self.wb_diag_button.setEnabled(False)  # enabled after first result
         bottom_row.addWidget(self.wb_diag_button)
-        self.btn_help = make_help_button("continuum_subtract", self)
-        from setiastro.saspro.shortcuts import ShortcutGrip
-        bottom_row.addWidget(ShortcutGrip("contsub", self))
-        bottom_row.addWidget(self.btn_help)        
         main_layout.addLayout(top_cols)
         main_layout.addLayout(bottom_row)
+
+        # Grip + help: their own row at the bottom
+        from setiastro.saspro.shortcuts import ShortcutGrip
+        self.btn_help = make_help_button("continuum_subtract", self)
+        grip_row = QHBoxLayout()
+        grip_row.setContentsMargins(0, 0, 0, 0)
+        grip_row.addWidget(ShortcutGrip("contsub", self))
+        grip_row.addStretch(1)
+        grip_row.addWidget(self.btn_help)
+        main_layout.addLayout(grip_row)
         self.setLayout(main_layout)
         self.installEventFilter(self)
 

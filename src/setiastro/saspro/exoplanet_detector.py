@@ -1244,7 +1244,7 @@ class ExoPlanetWindow(QDialog):
         super().__init__(parent)
         self.settings = settings
         self.main_win = parent
-        self.setWindowTitle(self.tr("Exoplanet Transit Detector"))
+        self.setWindowTitle(self.tr("Variable Stars & Exoplanets"))
 
         self.resize(900, 600)
         self.wrench_path = wrench_path
@@ -1320,7 +1320,9 @@ class ExoPlanetWindow(QDialog):
         # — Mode selector —
         mode_layout = QHBoxLayout()
         mode_layout.addWidget(QLabel(self.tr("Mode:")))
-        self.aligned_mode_rb = QRadioButton(self.tr("Aligned Subs"))
+        # Calibrated frames, registered or not: the tracker follows the field
+        # in every frame, so unregistered frames are the better input.
+        self.aligned_mode_rb = QRadioButton(self.tr("Calibrated Subs"))
         self.raw_mode_rb     = QRadioButton(self.tr("Raw Subs"))
         self.aligned_mode_rb.setChecked(True)
         mg = QButtonGroup(self)
@@ -1356,9 +1358,6 @@ class ExoPlanetWindow(QDialog):
         self.reset_btn.clicked.connect(self._reset_to_factory)
         mode_layout.addWidget(self.reset_btn)
         mode_layout.addWidget(self.wrench_button)
-        from setiastro.saspro.shortcuts import ShortcutGrip
-        mode_layout.addWidget(ShortcutGrip("exo_detector", self))
-        mode_layout.addWidget(make_help_button("exoplanet", self))
 
         # — Calibration controls (hidden in Aligned) —
         cal_layout = QHBoxLayout()
@@ -1606,6 +1605,14 @@ class ExoPlanetWindow(QDialog):
         statlay.addWidget(self.status_label, 3)
         statlay.addWidget(self.progress_bar, 1)
         main.addLayout(statlay)
+        # Grip + help: their own row at the bottom
+        from setiastro.saspro.shortcuts import ShortcutGrip
+        grip_row = QHBoxLayout()
+        grip_row.setContentsMargins(0, 0, 0, 0)
+        grip_row.addWidget(ShortcutGrip("exo_detector", self))
+        grip_row.addStretch(1)
+        grip_row.addWidget(make_help_button("exoplanet", self))
+        main.addLayout(grip_row)
 
         # init
         self.on_mode_changed(self.aligned_mode_rb, True)
@@ -2768,21 +2775,68 @@ class ExoPlanetWindow(QDialog):
         paths, _ = QFileDialog.getOpenFileNames(self, self.tr("Select Raw Frames"), start_dir, "FITS, TIFF or XISF (*.fit *.fits *.fts *.fz *.tif *.tiff *.xisf)")
         if not paths: return
         settings.setValue("ExoPlanet/lastRawFolder", os.path.dirname(paths[0]))
+        paths = self._paths_to_load(paths, "raw")
+        if not paths:
+            self.status_label.setText(self.tr("Load canceled."))
+            return
 
         self.star_list.clear()
         self.plot_widget.clear()
         loaded = self._load_frames(paths, want_catalogs=False)
+        self._loaded_kind = "raw" if loaded else None
         # Raw frames are calibrated next; workers return for Measure.
         self._shutdown_pool()
         self.status_label.setText(self.tr("Loaded {0}/{1} raw frames "
                                           "({2}×{2} software bin)").format(loaded, len(paths), self.bin_factor))
+
+    def _paths_to_load(self, paths, kind: str):
+        """
+        Frames picked in the file dialog -> the frames to load.  A file
+        dialog picks from one folder, and nights are often kept in folders of
+        their own, so when frames of the same kind are already loaded the
+        user is asked whether the new ones join them or replace them.  Add
+        reloads the combined list, which keeps time order, binning and the
+        frame store consistent.  None = cancelled.
+        """
+        paths = list(paths)
+        old = list(getattr(self, "image_paths", None) or [])
+        if (not old or getattr(self, "_loaded_kind", None) != kind
+                or not getattr(self, "_cached_images", None)):
+            return paths
+
+        def key(p):
+            return os.path.normcase(os.path.abspath(p))
+
+        have = {key(p) for p in old}
+        new = [p for p in paths if key(p) not in have]
+        if not new:                  # nothing new: the selection is what to load
+            return paths
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Question)
+        box.setWindowTitle(self.tr("Load Frames"))
+        box.setText(self.tr("Frames already loaded: {0}\nNew frames selected: {1}").format(
+            len(old), len(new)))
+        box.setInformativeText(self.tr(
+            "Add the new frames to the loaded ones (another night, or another "
+            "folder), or replace them?"))
+        add_btn = box.addButton(self.tr("Add"), QMessageBox.ButtonRole.AcceptRole)
+        rep_btn = box.addButton(self.tr("Replace"), QMessageBox.ButtonRole.DestructiveRole)
+        box.addButton(self.tr("Cancel"), QMessageBox.ButtonRole.RejectRole)
+        box.setDefaultButton(add_btn)
+        box.exec()
+        clicked = box.clickedButton()
+        if clicked is add_btn:
+            return old + new
+        if clicked is rep_btn:
+            return paths
+        return None
 
     def load_aligned_subs(self) -> bool:
         self._start_warmup()                 # overlaps the file dialog
         settings = QSettings()
         start_dir = settings.value("ExoPlanet/lastAlignedFolder", os.path.expanduser("~"), type=str)
         paths, _ = QFileDialog.getOpenFileNames(
-            self, self.tr("Select Aligned Frames"), start_dir,
+            self, self.tr("Select Calibrated Frames"), start_dir,
             "FITS, TIFF or XISF (*.fit *.fits *.fts *.fz *.tif *.tiff *.xisf)"
         )
         if not paths:
@@ -2790,8 +2844,13 @@ class ExoPlanetWindow(QDialog):
             return False
 
         settings.setValue("ExoPlanet/lastAlignedFolder", os.path.dirname(paths[0]))
+        paths = self._paths_to_load(paths, "calibrated")
+        if not paths:
+            self.status_label.setText(self.tr("Load canceled."))
+            return False
 
         loaded = self._load_frames(paths, want_catalogs=True)
+        self._loaded_kind = "calibrated" if loaded else None
         self.status_label.setText(self.tr("Loaded {0}/{1} frames "
                                           "({2}×{2} software bin)").format(loaded, len(paths), self.bin_factor))
         return loaded > 0
@@ -5062,6 +5121,160 @@ class ExoPlanetWindow(QDialog):
             "n_clipped": int(keep.size - n_k),
         }
 
+    def _variable_fold_page(self, idx, p_ls, p_bls):
+        """
+        Analyze -> Variable Star Fold.  The Phase Fold tab is built for a
+        transit (BLS period, transit model); a pulsator or an eclipsing binary
+        wants its light curve folded at the period of its own choosing: the
+        Lomb-Scargle peak, twice it, the BLS period, twice that, or a typed
+        one.  An EW binary's two minima put both periodograms at half its
+        period, hence the 2x choices.  Phase 0 is minimum light, two cycles
+        shown, 50 bins per cycle.  By default the curve is the differential
+        flux before detrending, since a trend fit can take part of a slow
+        variation with it; Detrended uses the main window's curve, which also
+        divides out the meridian-flip step.
+        """
+        page = QWidget()
+        lay = QVBoxLayout(page)
+        lay.setContentsMargins(0, 0, 0, 0)
+
+        def series(rows, errs):
+            times = getattr(self, "times", None)
+            if rows is None or times is None or not (0 <= int(idx) < np.shape(rows)[0]):
+                return None
+            jd = np.asarray(times.utc.jd, dtype=np.float64)
+            y = np.asarray(rows[idx], dtype=np.float64)
+            if jd.size != y.size:
+                return None
+            e = (np.asarray(errs[idx], dtype=np.float64)
+                 if errs is not None and np.shape(errs) == np.shape(rows) else None)
+            ok = (np.asarray(self.flags[idx]) == 0) & np.isfinite(y) & (y > 0) & np.isfinite(jd)
+            if np.count_nonzero(ok) < 10:
+                return None
+            jd, y = jd[ok], y[ok]
+            med = float(np.median(y))
+            return jd, y / med, (e[ok] / med if e is not None else None)
+
+        raw = series(getattr(self, "rel_flux_raw", None), getattr(self, "rel_err_raw", None))
+        det = series(getattr(self, "fluxes", None), getattr(self, "flux_errors", None))
+        if raw is None:
+            raw = det
+
+        row = QHBoxLayout()
+        row.setContentsMargins(4, 4, 4, 0)
+        row.addWidget(QLabel(self.tr("Fold at:")))
+        src = QComboBox()
+        for lab, p in ((self.tr("Lomb-Scargle peak"), p_ls), (self.tr("2 × Lomb-Scargle peak"), 2.0 * p_ls),
+                       (self.tr("BLS period"), p_bls), (self.tr("2 × BLS period"), 2.0 * p_bls)):
+            if np.isfinite(p) and p > 0:
+                src.addItem(lab, float(p))
+        src.addItem(self.tr("Custom"), None)
+        src.setToolTip(self.tr(
+            "Period to fold at.  Lomb-Scargle suits smooth variation (pulsating\n"
+            "stars); BLS suits eclipses.  An EW binary's two minima put both at\n"
+            "half its period: use the 2 × choices.  Type a period for Custom."))
+        row.addWidget(src)
+        row.addWidget(QLabel(self.tr("Period:")))
+        per = QDoubleSpinBox()
+        per.setDecimals(6)
+        per.setRange(1e-4, 1e5)
+        per.setSingleStep(1e-4)
+        per.setSuffix(" d")
+        per.setKeyboardTracking(False)
+        row.addWidget(per)
+        det_cb = QCheckBox(self.tr("Detrended"))
+        det_cb.setToolTip(self.tr(
+            "Off: the differential flux before detrending, every night at its own\n"
+            "level.  A trend fit can take part of a slow variation with it.\n"
+            "On: the curve with the main window's Detrend applied, which also\n"
+            "divides out the step at a meridian flip."))
+        det_cb.setEnabled(det is not None and det is not raw)
+        row.addWidget(det_cb)
+        row.addStretch(1)
+        lay.addLayout(row)
+        info = QLabel()
+        info.setWordWrap(True)
+        info.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        info.setStyleSheet("font-size: 11px; color: #aaddff; padding: 0px 4px;")
+        lay.addWidget(info)
+        pw = pg.PlotWidget()
+        pw.addLegend(offset=(10, 10))
+        pw.setLabel("bottom", self.tr("Phase (0 = minimum light)"))
+        pw.setLabel("left", self.tr("Relative flux"))
+        pw.showGrid(True, True, alpha=0.3)
+        lay.addWidget(pw, 1)
+
+        def draw():
+            pw.clear()
+            data = det if (det_cb.isChecked() and det is not None) else raw
+            P = float(per.value())
+            if data is None or not (P > 0):
+                info.setText(self.tr("No usable points to fold."))
+                return
+            jd, y, e = data
+            ph = ((jd - jd[0]) / P) % 1.0
+            nb = 50
+            bx, by, _be = xphot.bin_curve(ph, y, 1.0 / nb, e=e)
+            ph0 = float(bx[int(np.argmin(by))]) if bx.size >= 3 else float(ph[int(np.argmin(y))])
+            ph = (ph - ph0) % 1.0
+            bx, by, be = xphot.bin_curve(ph, y, 1.0 / nb, e=e)
+
+            def two(x, *ys):        # phase -0.5 .. 1.5: the minimum at 0 and 1
+                xs = np.concatenate([x - 1.0, x, x + 1.0])
+                keep = (xs >= -0.5) & (xs < 1.5)
+                return (xs[keep],) + tuple(np.tile(v, 3)[keep] for v in ys)
+
+            px, py = two(ph, y)
+            pw.plot(px, py, pen=None, symbol="o", symbolSize=4,
+                    symbolBrush=pg.mkBrush(150, 190, 255, 130), symbolPen=None,
+                    name=self.tr("data"))
+            if bx.size:
+                qx, qy, qe = two(bx, by, be)
+                pw.addItem(pg.ErrorBarItem(x=qx, y=qy, height=2 * qe,
+                                           pen=pg.mkPen((255, 210, 80), width=1)))
+                pw.plot(qx, qy, pen=None, symbol="o", symbolSize=7,
+                        symbolBrush=pg.mkBrush(255, 210, 80), symbolPen=None,
+                        name=self.tr("phase bins (0.02)"))
+            pw.setXRange(-0.5, 1.5, padding=0.01)
+            lo, hi = np.percentile(y, [0.5, 99.5])
+            pad = 0.08 * max(hi - lo, 1e-4)
+            pw.setYRange(lo - pad, hi + pad, padding=0)
+            t_min = float(jd[0] + ph0 * P)
+            amp = (2.5 * np.log10(float(np.max(by)) / float(np.min(by)))
+                   if bx.size >= 3 and np.min(by) > 0 else float("nan"))
+            pw.setTitle(self.tr("{0} — folded at P = {1:.6f} d").format(self._star_label(idx), P))
+            info.setText(self.tr(
+                "P = {0:.6f} d ({1:.3f} h)   Minimum light JD {2:.5f} (UTC)   "
+                "Binned amplitude {3:.3f} mag   {4:.1f} cycles covered").format(
+                P, P * 24.0, t_min, amp, float(np.ptp(jd)) / P))
+
+        def on_src(_i):
+            p = src.currentData()
+            if p is None:
+                return
+            per.blockSignals(True)
+            per.setValue(float(p))
+            per.blockSignals(False)
+            draw()
+
+        def on_per(_v):
+            p = src.currentData()
+            if p is None or abs(float(p) - per.value()) > 1e-6:
+                src.blockSignals(True)
+                src.setCurrentIndex(src.count() - 1)        # Custom
+                src.blockSignals(False)
+            draw()
+
+        src.currentIndexChanged.connect(on_src)
+        per.valueChanged.connect(on_per)
+        det_cb.toggled.connect(lambda _c: draw())
+        p0 = src.itemData(0)
+        per.blockSignals(True)
+        per.setValue(float(p0) if p0 is not None else 1.0)
+        per.blockSignals(False)
+        draw()
+        return page
+
     def on_analyze(self):
         sels = self.star_list.selectedItems()
         if len(sels) != 1:
@@ -5517,6 +5730,10 @@ class ExoPlanetWindow(QDialog):
         pg_ls.setLabel("left", self.tr("LS Power"))
         pg_ls.showGrid(True, True, alpha=0.3)
         tabs.addTab(pg_ls, "Lomb-Scargle")
+
+        # ── Tab 1b: Variable star fold (LS / BLS / typed period) ─────────────
+        tabs.addTab(self._variable_fold_page(idx, best_ls_period, best_period_d),
+                    self.tr("Variable Star Fold"))
 
         # ── Tab 2: BLS Periodogram (whitened) ────────────────────────────────
         pg_bls = pg.PlotWidget(title=self.tr("BLS Periodogram (whitened SNR)"))

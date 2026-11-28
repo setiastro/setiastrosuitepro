@@ -4007,10 +4007,6 @@ class WIMIDialog(QDialog):
         self.copy_button.clicked.connect(self.copy_ra_dec_to_clipboard)
         button_layout.addWidget(self.copy_button)
 
-        from setiastro.saspro.shortcuts import ShortcutGrip
-        button_layout.addWidget(ShortcutGrip("whats_in_my_image", self))
-        button_layout.addWidget(make_help_button("whats_in_my_image", self))
-
         # Settings button (wrench icon)
         self.settings_button = QPushButton(self.tr("⚙ Settings"))
         self.settings_button.setToolTip(self.tr("Settings"))
@@ -4047,6 +4043,15 @@ class WIMIDialog(QDialog):
         self.mini_preview.mouseMoveEvent = self.on_mini_preview_drag
         self.mini_preview.mouseReleaseEvent = self.on_mini_preview_release
         left_panel.addWidget(self.mini_preview)
+        # Grip + help: their own row at the bottom of the left column
+        from setiastro.saspro.shortcuts import ShortcutGrip
+        # No addStretch() in this row: a stretch makes the left column claim
+        # half of the window. The right-aligned help still sits flush right.
+        grip_row = QHBoxLayout()
+        grip_row.setContentsMargins(0, 0, 0, 0)
+        grip_row.addWidget(ShortcutGrip("whats_in_my_image", self))
+        grip_row.addWidget(make_help_button("whats_in_my_image", self), 0, Qt.AlignmentFlag.AlignRight)
+        left_panel.addLayout(grip_row)
 
         # Right Column Layout
         right_panel = QVBoxLayout()

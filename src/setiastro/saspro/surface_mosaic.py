@@ -2328,9 +2328,6 @@ if _HAVE_QT:
             self.btn_advanced.clicked.connect(self._open_advanced)
             run_row.addWidget(self.btn_advanced)
             run_row.addStretch(1)
-            from setiastro.saspro.shortcuts import ShortcutGrip
-            run_row.addWidget(ShortcutGrip("surface_mosaic", self))
-            run_row.addWidget(make_help_button("surface_mosaic", self))
             self.btn_run = QPushButton(self.tr("Build Mosaic"))
             self.btn_run.clicked.connect(self._on_run)
             run_row.addWidget(self.btn_run)
@@ -2338,6 +2335,14 @@ if _HAVE_QT:
             self.btn_reset.clicked.connect(self._reset_to_factory)
             run_row.addWidget(self.btn_reset)
             left.addLayout(run_row)
+            # Grip + help: their own row at the bottom of the controls column
+            from setiastro.saspro.shortcuts import ShortcutGrip
+            grip_row = QHBoxLayout()
+            grip_row.setContentsMargins(0, 0, 0, 0)
+            grip_row.addWidget(ShortcutGrip("surface_mosaic", self))
+            grip_row.addStretch(1)
+            grip_row.addWidget(make_help_button("surface_mosaic", self))
+            left.addLayout(grip_row)
 
             # ---- right column: tile layout overview ----
             right = QVBoxLayout()

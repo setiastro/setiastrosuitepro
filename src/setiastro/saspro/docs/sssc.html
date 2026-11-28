@@ -47,8 +47,7 @@ image &mdash; compared against real measured spectra from the Gaia mission
 &mdash; rather than taking a sensor QE curve as an input. Filter curves stay
 as inputs; everything else (sensor QE at operating temperature, AR coating,
 optics, atmosphere) is absorbed into <code>R(&lambda;)</code> and solved
-empirically. Each run on the same filter+camera combination refines the
-solution and seeds the next.</p>
+empirically. Each run's solution is kept in a per-rig session history.</p>
 
 <div class="pub">
   <b>Published method.</b> SSSC is a SetiAstro invention, documented in a formal
@@ -63,101 +62,133 @@ solution and seeds the next.</p>
 </div>
 
 <h2>1. Using the tool</h2>
-<p>Three buttons across the top row set up and run the calibration:
-<b>Step 0</b> plate-solves the active frame, <b>Step 1</b> fetches calibrator
-stars and their spectra, and <b>Step 2</b> runs the SSSC solver on the
-measured stellar photometry. The dialog remembers the last filter/sensor
-selections and the <b>Camera / Rig</b> label &mdash; so continuing a long-term
-calibration on the same equipment is just &ldquo;open, Step 1, Step 2&rdquo;.</p>
-
-<h3>Step 0 &mdash; Plate solve</h3>
+<p>The window is the settings for your optical chain and one button. Pick the
+filters once (they and the <b>Camera / Rig</b> label are remembered), make the
+image you want calibrated the active view, and press <b>Calibrate</b>. SSSC
+finds the stars, looks up their spectra, measures them, solves the system
+response, applies the correction, and shows a summary and every chart beside
+the settings. On a 12&nbsp;Mpx frame that takes about 6&ndash;11&nbsp;seconds;
+the first run of a session is the slower one. Continuing a long-term
+calibration on the same equipment is just &ldquo;open, Calibrate&rdquo;.</p>
 <p>SSSC needs a plate solution to map pixels to sky coordinates. If the active
-document already has a WCS it's used directly; otherwise the <b>Step 0</b>
-button runs the plate solver in-place and refreshes the WCS. Step&nbsp;1 will
-offer to call Step&nbsp;0 for you if you skip ahead.</p>
+document already has a WCS it's used directly; otherwise Calibrate offers to run
+the plate solver first. <b>Undo</b> reverts the calibration like any other
+edit.</p>
 
-<h3>Step 1 &mdash; Fetch stars &amp; spectra</h3>
-<p>Mechanically identical to the SFCC fetch step (same auto-&sigma; SEP waterfall,
-same bulk Gaia-library match, same SIMBAD query, same B&minus;V letter inference,
-same synthetic Johnson B/V/R via <code>gaiaxpy</code>) &mdash; see the SFCC doc
-for the plot interpretation. Choose a <b>White Reference</b> SED for diagnostics
-(G2V by default; it does <i>not</i> affect the solved R(&lambda;)).</p>
-
-<h3>The shared panel &mdash; filters and the Camera/Rig label</h3>
-<p>Three rows configure the optical chain:</p>
+<h3>The settings</h3>
 <ul>
+  <li><b>White Reference</b> &mdash; the star that should come out white
+      (R&nbsp;=&nbsp;G&nbsp;=&nbsp;B). Default G2V, the Sun. The correction divides
+      every star's expected colour by this star's, through the same filter curves
+      (&sect;2.4). It does <i>not</i> affect the solved R(&lambda;).</li>
   <li><b>R / G / B Filter</b> &mdash; the channel filter curves. Reliable
       interferometric data for these is published by every reputable filter
       vendor, so filter curves <i>are</i> an input to SSSC &mdash; the only
       input it takes about the optics.</li>
   <li><b>LP/Cut 1 &amp; 2</b> &mdash; any light-pollution or cut filters in
       the light path. These multiply into all three channels.</li>
-  <li><b>White Reference</b> &mdash; the SED defining &ldquo;neutral grey&rdquo;
-      for the diagnostic residual plot. Default G2V.</li>
-  <li><b>Camera / Rig</b> &mdash; free-text label such as
+  <li>Notice there is <b>no sensor QE picker</b> &mdash; that's the whole
+      point. SSSC is <i>solving</i> for the QE, so it can't be an input.</li>
+  <li><b>Filter / Sensor Curves&hellip;</b> opens the
+      <a href="curve_manager.html" style="color:#88ffcc;">Curve Manager</a> &mdash; paste
+      a curve, import a CSV, digitize a datasheet chart or generate a bandpass; new
+      curves appear in the filter lists immediately. <b>SASP Viewer</b> opens the
+      same curve explorer used by SFCC (see its documentation for details)
+      &mdash; useful for sanity-checking a custom filter curve you just added.</li>
+  <li><b>Session History &rarr; Camera / Rig</b> &mdash; free-text label such as
       <code>IMX492 &middot; EdgeHD f/7</code>. Together with the filter
       selections this uniquely identifies the imaging train, and separates the
       saved <code>R(&lambda;)</code> history per sensor/optical train so that
       solutions from different rigs sharing a filter set don't mix. Leave blank
-      if you only have one setup.</li>
-  <li>Notice there is <b>no sensor QE picker</b> &mdash; that's the whole
-      point. SSSC is <i>solving</i> for the QE, so it can't be an input.</li>
-</ul>
-<p>The <b>SASP Viewer</b> button opens the same curve explorer used by SFCC
-(see its documentation for details) &mdash; useful for sanity-checking a
-custom filter curve you just added. <b>Filter / Sensor Curves&hellip;</b>
-(in the Step&nbsp;2 row) opens the
-<a href="curve_manager.html" style="color:#88ffcc;">Curve Manager</a> &mdash; paste
-a curve, import a CSV, digitize a datasheet chart or generate a bandpass; new
-curves appear in the filter lists immediately.</p>
-
-<h3>Step 2 &mdash; Run SSSC calibration</h3>
-<p>The main action, with the standard options alongside:</p>
-<ul>
-  <li><b>BG Neutralize</b> &mdash; run the Background Neutralization tool before
-      the solve and again on the final output, so a channel pedestal doesn't
-      contaminate the stellar ratios.</li>
-  <li><b>Star &sigma;</b> + <b>Auto</b> &mdash; identical to the SFCC detection
-      threshold control. Auto waterfall is on by default.</li>
-  <li><b>Advanced &rarr; R(&lambda;) ctrl pts</b> &mdash; resolution of the
-      Stage-3 solved response curve, per channel:
+      if you only have one setup. See <i>Session memory</i> below.</li>
+  <li><b>Background Neutralization</b> &mdash; run the Background Neutralization
+      tool before the solve and again on the final output, so a channel pedestal
+      doesn't contaminate the stellar ratios.</li>
+  <li><b>Advanced</b> (folded away; click to open):
       <ul>
-        <li><b>8</b> &mdash; default, good for 200&ndash;600 stars.</li>
-        <li><b>12</b> &mdash; finer, &sim;600+ stars.</li>
-        <li><b>16</b> &mdash; high resolution, &sim;1000+ stars.</li>
-      </ul>
-      More points on too few stars fits noise, not your system. Leave at 8
-      unless you have a dense field.</li>
-  <li><b>Advanced &rarr; M(&Sigma;) ctrl pts</b> &mdash; max stars used for
-      photometry (default 500). Stars are chosen brightest-first with
-      Gaia-spectrum stars prioritized; dim stars add noise, not accuracy.</li>
+        <li><b>Star &sigma;</b> + <b>Auto</b> &mdash; identical to the SFCC
+            detection threshold control. Auto is on by default.</li>
+        <li><b>R(&lambda;) ctrl pts</b> &mdash; resolution of the Stage-3 solved
+            response curve, per channel: <b>8</b> (default, good for
+            200&ndash;600 stars), <b>12</b> (finer, &sim;600+ stars), <b>16</b>
+            (high resolution, &sim;1000+ stars). More points on too few stars
+            fits noise, not your system. Leave at 8 unless you have a dense
+            field.</li>
+        <li><b>Max stars</b> &mdash; max stars used for photometry (default 500).
+            Stars are chosen brightest-first with Gaia-spectrum stars
+            prioritized; dim stars add noise, not accuracy.</li>
+      </ul></li>
 </ul>
+
+<h3>What Calibrate does</h3>
+<p>Finding the stars and their spectra is mechanically identical to SFCC (same
+auto-&sigma; SEP search, same bulk Gaia-library match and plate-solution check,
+same SIMBAD query, same B&minus;V letter inference, same synthetic Johnson B/V/R
+via <code>gaiaxpy</code>) &mdash; see the SFCC doc. The stars are found once and
+measured where they were found; the old two-step window detected them all over
+again for the solve. The calibrators are the stars with a Gaia XP spectrum;
+Pickles templates (from SIMBAD spectral types) fill in only when there are fewer
+than 50 of them, because a template is a dust-free spectrum and predicts a
+reddened star too blue. Then the calibrators are measured, the response is solved
+at the highest bootstrap stage the field supports (&sect;2.2), the correction is
+applied, and the solution is saved to the session history.</p>
 
 <h3>Session memory &mdash; the long game</h3>
 <p>SSSC accumulates calibration quality across runs. Every solve is saved,
 keyed on the filter + camera combination, into the Gaia XP sqlite cache:</p>
 <ul>
-  <li>The current filter+camera combination is shown as an 8-character
-      <b>session id</b> next to the Close button along with the number of
-      prior runs for that id and a summary of the last one
-      (<i>&ldquo;Session 7a3f2b1c &middot; 4 prior runs &middot; last: Stage 3
-      &middot; 487 stars&rdquo;</i>).</li>
-  <li>When Step&nbsp;2 runs and a prior Stage-3 solution exists for the current
-      session, the new solve <b>seeds its optimizer</b> from the prior
-      session's per-channel control points &mdash; so the next run starts
-      close to the previous solution and refines from there rather than
-      re-solving from scratch.</li>
+  <li>The <b>Session History</b> box always shows which session the current
+      settings select, and follows every filter or Camera / Rig change as you
+      make it:
+      <ul>
+        <li>the 8-character <b>session id</b>, the filter set, any LP filters
+            and the camera / rig name;</li>
+        <li>how many runs it holds over how many nights (nights come from each
+            image's DATE-AVG / DATE-OBS) and the best run so far;</li>
+        <li>the last run: its image, stage, star count and residual RMS.</li>
+      </ul>
+      For example: <i>&ldquo;Session 7a3f2b1c &middot; ANTLIA_V_PRO_SERIES R/G/B
+      &middot; &lsquo;IMX492 &middot; EdgeHD&rsquo; / 4 runs, 3 nights &middot;
+      best: Stage 3 from 487 stars / Last: ngc1333.fits &middot; Stage 3
+      &middot; 487 stars &middot; RMS 0.0175&rdquo;</i>.
+      A new camera name starts a new session. When a name has no runs yet but
+      the same filters have runs under another name, the box says so, so a
+      typo or a renamed rig does not silently start over.</li>
+  <li><b>View History&hellip;</b> opens every saved run of the session (and of
+      the others, from the Session list at the top): a table of date, image,
+      stage, stars, B&minus;V range, RMS, the R and B gains, white reference and
+      airmass; a plot of every Stage&nbsp;3 run's <code>R(&lambda;)</code>
+      control values with their &plusmn;1&sigma; bars and, once there are two
+      or more, their weighted mean (&sect;2.6); and the R/B gains run by run.
+      <b>Delete Run</b> removes the selected run(s) only, for one bad night
+      that should not count.</li>
+  <li>Every Stage&nbsp;3 solve is stored with the uncertainty of each control
+      value, ready for the multi-night Stage&nbsp;4, which will combine
+      sessions and separate the hardware from the atmosphere (&sect;2.7).
+      Each run is solved exactly on its own stars; an earlier session does
+      not change it.</li>
   <li><b>Clear History</b> wipes all saved solutions for the current session id
       (with confirmation). Use it when the optical train changes and the
       accumulated curve is no longer physically valid.</li>
 </ul>
-<p>Over several nights of imaging with the same rig, the solution converges to
-your actual rig-specific R(&lambda;) &mdash; a measurement no datasheet could
-give you. See &sect;2.7 for the convergence endgame.</p>
+<p>Over several nights of imaging with the same rig, the history builds the
+data for your actual rig-specific R(&lambda;) &mdash; a measurement no datasheet
+could give you. See &sect;2.7 for the endgame.</p>
 
-<h3>Reading the diagnostics (four-panel figure)</h3>
-<p>After Step&nbsp;2 the lower pane shows four panels; the suptitle names the
-stage reached, star count, and per-stage RMS waterfall:</p>
+<h3>Reading the results</h3>
+<p>The lines above the charts give the star count (Gaia XP spectra and Pickles
+templates), the time the run took, the stage reached, the B&minus;V range,
+the residual RMS, how many runs the session has, the gains, and how many more
+stars (if any) stand between you and Stage&nbsp;3. The report below has six
+panels: the four diagnostics, and in the right-hand column the same two star
+charts SFCC shows (the spectral-type histogram and the calibration-source pie;
+see the SFCC doc for reading them). The suptitle names the stage reached, star
+count, and per-stage RMS waterfall.</p>
+<p>An amber warning under the summary means the stars do not follow the chosen
+filter curves (the scalar Stage&nbsp;1 fit leaves more than 8&nbsp;%; about 2&nbsp;%
+is normal). The usual cause is an OSC camera behind a UV/IR cut described by
+UV-cut-only curves: pick the UV/IR-cut curves, or add the cut filter as
+LP/Cut.</p>
 
 <h4>Panel 1 &mdash; Solved R(&lambda;) per channel</h4>
 <p>The headline plot. For <b>Stage&nbsp;3</b> each channel's own solved
@@ -179,8 +210,8 @@ and B/G ratio space vs expected ratio, four series: dark circles for
 <i>after</i>. The before clouds should sit off the zero line (that's the
 colour error SSSC is fixing); the after triangles should collapse to a
 tight band on zero. The horizontal dashed line is the perfect-calibration
-reference. If a residual slope or curvature remains, Stage&nbsp;3 is still
-converging &mdash; another run on the same rig will tighten it further.</p>
+reference. If a residual slope or curvature remains, the curves (or the
+model) do not describe this camera well.</p>
 
 <h4>Panel 3 &mdash; Calibration quality by stage (the waterfall)</h4>
 <p>A horizontal bar chart with one row per bootstrap stage, bar length =
@@ -206,11 +237,9 @@ you'll see whether to point at a denser field (add stars) or a wider
 colour spread (add span).</p>
 
 <h3>After apply</h3>
-<p>Step&nbsp;2 commits the calibrated image as an &ldquo;SSSC Calibrated&rdquo;
+<p>Calibrate commits the calibrated image as an &ldquo;SSSC Calibrated&rdquo;
 step; the metadata records the stage reached, star count, residual RMS, gains,
-B&minus;V range and session id for traceability. A completion dialog repeats
-the headline numbers and tells you how many more stars (if any) stand between
-you and Stage&nbsp;3 on the next run.</p>
+B&minus;V range and session id for traceability.</p>
 
 <h2>2. Technical details</h2>
 <p class="tech-lead">RGB only. The core departure from SFCC: SSSC never
@@ -221,19 +250,23 @@ transmission is the only published optical datum that enters the solver.</p>
 
 <div class="credit"><b>Third-party data used.</b> Gaia DR3 XP calibrated
 spectra (ESA/DPAC) via <code>gaiaxpy</code>; the Pickles&nbsp;1998 stellar
-flux library and SIMBAD (CDS Strasbourg) as fallbacks when no XP spectrum is
-available; SEP for source extraction. The empirical system-response solver,
+flux library and SIMBAD (CDS Strasbourg) as fallbacks when a field has fewer
+than 50 XP stars; SEP for source extraction. The empirical system-response solver,
 the bootstrap-stage machinery, the hat-basis control-point parameterisation,
-the directional coordinate descent, the session-cache seeding scheme, and
-every SSSC-specific guard below are SetiAstro's own work &mdash; see the
+the Stage&nbsp;3 least-squares solve with its per-star grey factor, the session
+history, and every SSSC-specific guard below are SetiAstro's own work &mdash; see the
 <a href="https://doi.org/10.5281/zenodo.23107662" style="color:#9fcfe6;">published
 whitepaper</a> for the formal derivation.</div>
 
 <h3>2.1 The model</h3>
 <p>For every star <code>i</code> and channel <code>c &isin; {R, G, B}</code>:</p>
 <div class="matheq-hero">\mathrm{measured}_c \;=\; k_c \,\int f_{\mathrm{star}}(\lambda)\,T^{c}_{\mathrm{filter}}(\lambda)\,R(\lambda)\,d\lambda</div>
-<p>where <code>f_star(&lambda;)</code> is the Gaia XP calibrated spectrum
-(interpolated onto the 3000&ndash;11000&nbsp;&Aring;, 1&nbsp;&Aring; grid),
+<p>(integrated photon-counting, <code>&int; f &lambda; T R d&lambda;</code>:
+a sensor counts photons, each of energy <code>hc/&lambda;</code>; until
+2026-11-28 the integrals were energy, a difference of about 1&nbsp;% once the
+white reference divides out) where <code>f_star(&lambda;)</code> is the Gaia XP
+calibrated spectrum (interpolated onto the 3000&ndash;11000&nbsp;&Aring;,
+1&nbsp;&Aring; grid), over the <b>whole</b> filter curve,
 <code>T_filter^c</code> is the published filter transmission (combined
 with any LP/cut filters), <code>R(&lambda;)</code> is the <i>unknown</i>
 effective system response the solver is after, and <code>k_c</code> is a
@@ -250,9 +283,9 @@ colour span of the population:</p>
 <div class="eq">Stage = 3   if  N &ge; 200  AND  Δ(B-V) &ge; 1.5
          2   if  50 &le; N &lt; 200
          1   if  N &lt; 50</div>
-<p>Every stage is strictly more expressive than the one below it, so Stage&nbsp;3
-<i>must</i> beat Stage&nbsp;2's RMS to be kept &mdash; a strict-improvement guard
-reverts to Stage&nbsp;2 if the Stage&nbsp;3 fit regresses (&sect;2.5).</p>
+<p>Stage&nbsp;3 is kept unless its RMS is more than 1.25&times; Stage&nbsp;2's
+(&sect;2.5). With a field of 50 or more Gaia XP stars, <code>N</code> counts only
+those: Pickles templates fill in below that.</p>
 
 <h3>2.3 Stage 1 &mdash; scalar per-channel gains</h3>
 <p>The baseline. Compute measured and expected band ratios
@@ -263,6 +296,13 @@ is the median ratio of ratios:</p>
 <p>with <code>k_G = 1</code> (G is the reference), each gain clipped to
 <code>[0.1, 10]</code>. Equivalent to a traditional scalar SPCC white
 balance &mdash; but computed with no QE curve.</p>
+<p>Every stage's RMS is a fractional residual on the same 3&sigma;-clipped stars:
+for Stage&nbsp;1, <code>(m/k)/exp &minus; 1</code>; for Stage&nbsp;2,
+<code>p(m)/exp &minus; 1</code>; for Stage&nbsp;3, the measured ratio against the
+solved one. (Until 2026-11-28 Stage&nbsp;1 used <code>k&middot;m</code> and
+Stage&nbsp;2 <code>m/p(m)</code>, which measure the gain, not the fit: 0.31 and
+0.17 on ngc1333, where the true numbers are 0.018 and 0.017.) A Stage&nbsp;1
+RMS above 0.08 raises the curve-mismatch warning.</p>
 
 <h3>2.4 Stage 2 &mdash; color-dependent band response</h3>
 <p>Same three-model fit as SFCC &sect;2.4 (slope-only closed form, affine
@@ -280,91 +320,115 @@ mismatches):</p>
       (<code>|a_q| &lt; 10^6</code>). If any check fails, quadratic is rejected
       and the slope/affine winner stands.</li>
   <li><b>Degenerate-fit fallback</b> &mdash; if the chosen model's final
-      RMS on the full population exceeds <code>10^6</code> or is non-finite,
+      RMS exceeds <code>10^6</code> or is non-finite,
       SSSC reverts to the Stage-1 scalar RMS so the reported number stays
       meaningful rather than reporting a bogus explosion.</li>
 </ul>
 
-<h3>2.5 Stage 3 &mdash; full R(&lambda;) solver</h3>
-<p>The main SSSC contribution. For each channel independently SSSC solves
-for a piecewise-linear <code>R_c(&lambda;)</code> parameterised by
-<code>N_ctrl</code> control points inside the filter's passband:</p>
-<div class="matheq">R_c(\lambda)=\sum_{j=1}^{N_{\mathrm{ctrl}}} r_j^{(c)}\,\Lambda_j(\lambda)</div>
-<p>where <code>&Lambda;_j</code> are tent (hat) basis functions on the
-<code>ctrl_wl</code> grid. Precomputed per-star weight matrices turn the
-spectral integrals into one matrix-vector product per channel:</p>
-<div class="matheq">\hat{S}^{c}_i=\sum_{j=1}^{N_{\mathrm{ctrl}}} W_{ij}^{(c)}\,r_j^{(c)}\,,\quad W_{ij}^{(c)}=\int f_i(\lambda)\,T^{c}_{\mathrm{filter}}(\lambda)\,\Lambda_j(\lambda)\,d\lambda</div>
+<h4>Applying it: the white reference</h4>
+<p>The fit maps a star's measured ratio <code>m</code> to its <i>expected</i>
+ratio <code>p(m) &asymp; S_c/S_G</code>. An expected ratio is not a colour: through
+the Antlia R/G/B filters a G2V star's expected (R/G, B/G) is about (0.85, 1.12),
+because the bands differ in width and the spectrum in brightness. The corrected
+ratio is therefore the expected ratio <i>relative to the white reference's</i>,
+computed through the same curves:</p>
+<div class="matheq">\mathrm{gain}_c(m)=\frac{p_c(m)}{m\;\cdot\;S^{\mathrm{ref}}_c/S^{\mathrm{ref}}_G}</div>
+<p>applied per pixel around the channel median (the background stays where it
+is). Stage&nbsp;1 is the same with <code>p(m) = m/k_c</code>. Anything that scales
+a whole band &mdash; the unknown QE, exposure, the scale of a curve &mdash;
+scales the star and the reference alike and cancels, which is
+why SSSC needs no QE curve. On ngc1333 the corrected star colours match each
+star's colour relative to G2V through the full filter &times; QE system to
+within 1&ndash;2&nbsp;%. (Before 2026-11-28 the division was missing: stars were
+driven to their raw expected ratios, which left them about 8&nbsp;% short in R/G
+and 20&nbsp;% over in B/G &mdash; a purple cast.)</p>
 
-<h4>Per-channel passband thresholds</h4>
-<p>Control points cover the wavelength range where
-<code>T_filter^c</code> is above a per-channel fraction of its peak:</p>
+<h3>2.5 Stage 3 &mdash; full R(&lambda;) solver</h3>
+<p>The main SSSC contribution. For each channel SSSC solves for a
+piecewise-linear <code>R_c(&lambda;)</code> parameterised by
+<code>N_ctrl</code> control points on the filter's main lobe:</p>
+<div class="matheq">R_c(\lambda)=\sum_{j=1}^{N_{\mathrm{ctrl}}} a_j^{(c)}\,\phi_j(\lambda)</div>
+<p>where <code>&phi;_j</code> are tent (hat) functions on the
+<code>ctrl_wl</code> grid, held flat beyond the outer control points (never
+zero). The per-channel gain <code>k_c</code> is folded into
+<code>a^(c)</code>. Each star's spectrum and its measured fluxes are divided by
+its own G integral, and precomputed weight matrices turn the spectral integrals
+into one matrix-vector product per channel, over the <b>whole</b> filter
+curve:</p>
+<div class="matheq">\hat{S}^{c}_i=\sum_{j} W_{ij}^{(c)}\,a_j^{(c)}\,,\quad W_{ij}^{(c)}=\int \tilde f_i(\lambda)\,\lambda\,T^{c}_{\mathrm{filter}}(\lambda)\,\phi_j(\lambda)\,d\lambda</div>
+
+<h4>Where the control points sit</h4>
+<p>On each channel's main lobe: the contiguous run around the peak where
+<code>T_filter^c</code> is above a fraction of its peak.</p>
 <table>
   <tr><th>Channel</th><th>Threshold</th><th>Rationale</th></tr>
   <tr><td>R</td><td><code>0.30</code></td>
-      <td>Tight enough to exclude cross-channel leakage, loose enough to
-          cover the steep astro-filter rolloffs.</td></tr>
+      <td>Covers the steep rolloffs of astro filters.</td></tr>
   <tr><td>G</td><td><code>0.707</code> (half-power)</td>
-      <td>OSC Bayer green filters have a <b>secondary red lobe</b> that would
-          otherwise contaminate G integrals. The half-power clip removes it.
-          Also applied to the <i>G integrals used in Stage 1/2 ratio math</i>
-          so the baseline gains don't inherit the leak either.</td></tr>
+      <td>Keeps the control points off an OSC Bayer green's secondary red
+          lobe. The lobe is still <i>in the integral</i>: its light reaches the
+          green pixels, so R(&lambda;) there holds the nearest control value.</td></tr>
   <tr><td>B</td><td><code>0.30</code></td><td>Same as R.</td></tr>
 </table>
+<p>Until 2026-11-28 the green integrals (Stages 1&ndash;3) used only the
+half-power core, and Stage&nbsp;3 integrated only inside these thresholds. The
+camera records the shoulders and the lobe, so the model left out flux the data
+contains. On real Gaia XP spectra with a simulated OSC camera
+(<code>SONY_COLOR_SENSOR_*-UVCUT</code>) that put star colours off by a factor
+of about 1.8; with the whole curve they came out within 1&ndash;2&nbsp;%. On mono
+filters with no lobe it made no difference. A camera whose IR cut removes the
+lobes is described by choosing the UV/IR-cut curves, or by adding the cut
+filter as LP/Cut.</p>
 
-<h4>Loss and coordinate descent</h4>
-<p>The loss is the sum of squared fractional residuals in <b>colour-ratio
-space</b> &mdash; the same space Stage 1 and Stage 2 are evaluated in, so
-all three RMS numbers are directly comparable in the waterfall plot:</p>
-<div class="matheq">\mathcal{L}(\mathbf{r})=\sum_i\!\left(\frac{\mathrm{meas}_{R/G}^{(i)}}{k_R\hat{S}^{R}_i/\hat{S}^{G}_i}-1\right)^{\!2}+\sum_i\!\left(\frac{\mathrm{meas}_{B/G}^{(i)}}{k_B\hat{S}^{B}_i/\hat{S}^{G}_i}-1\right)^{\!2}</div>
-<p>A <b>directional coordinate descent</b> optimises
-<code>r_j^(c)</code>: for each control point, probe UP first (<code>&times;1.1</code>
-then <code>&times;1.2</code>) and take the best improving step; only if neither
-helps, probe DOWN (<code>&times;0.9</code>, <code>&times;0.8</code>); else stay:</p>
-<div class="matheq">r_j^{(c)}\leftarrow\mathrm{argmin}_{s\in\{1.1,\,1.2,\,0.9,\,0.8,\,1\}}\mathcal{L}\!\left(\,\ldots,\;s\cdot r_j^{(c)},\;\ldots\right)</div>
-<p>Up to 60 sweeps; converges when no point moved on a full sweep or the
-loss change drops below <code>10^-4</code>. The up-first ordering makes
-refinement sweeps (seeded from a prior solve) cheap &mdash; a point already
-near its optimum typically settles in one or two probes.</p>
+<h4>The solve</h4>
+<p>For star <code>i</code> and channel <code>c</code>:</p>
+<div class="matheq">m^{(c)}_i \;\approx\; s_i\,\hat{S}^{c}_i</div>
+<p><code>s_i</code> is a per-star <b>grey factor</b>: anything that scales all
+three channels of one star alike (aperture loss, the XP flux zero point, a
+passing cloud). Given <code>s</code>, each channel is a bounded linear
+least-squares problem (<code>a &ge; 0</code>) whose coefficients are exact
+(spectrum &times; filter &times; basis) and whose noise is only on the right-hand
+side; given <code>a</code>, <code>s_i</code> is the mean over channels of
+<code>m/&#348;</code>. Six passes alternate the two. Rows are weighted by the
+model, so each residual is a fractional error; a mild second-difference penalty
+keeps <code>R(&lambda;)</code> smooth; stars beyond 3&sigma; (MAD) are dropped on
+each pass, and only stars Stage&nbsp;2's clip kept take part at all. One overall
+level is free and is fixed by mean(<code>a^(G)</code>) = 1, which keeps the
+channels' relative levels: the camera's channel balance.</p>
+<p>This replaced (2026-11-28) a coordinate descent in colour-ratio space,
+which stepped control values by &plusmn;10&ndash;20&nbsp;%. That is about
+1&nbsp;% in an integral, coarser than the colour signal it chases, so the curve
+stayed at its flat start; and the ratio form puts the noisy measurements into
+the coefficients, a bias more stars do not remove. On real Gaia XP spectra with
+a known simulated response (1.5&nbsp;% noise, 2&nbsp;% grey per star) the new
+solve recovers <code>R(&lambda;)</code> to about 1&ndash;3&nbsp;% from 87 stars
+and about 1&nbsp;% from 2000; the old one stayed at the flat curve's
+3&ndash;10&nbsp;% error. (Simulations check the arithmetic; the real test is
+your own data.)</p>
 
-<h4>Prior-session seeding</h4>
-<p>When the session cache (&sect;2.6) has a prior Stage-3 solve for this
-<code>session_id</code>, the solver seeds <code>x_0</code> from that solve's
-per-channel control points, interpolated onto the current ctrl grid:</p>
-<div class="matheq">r_j^{(c),\mathrm{init}}=R^{(c)}_{\mathrm{prior}}\!\left(\lambda_j^{(c)}\right)\quad\text{if}\;N_{\mathrm{ctrl}}^{\mathrm{prior}}=N_{\mathrm{ctrl}}\;\text{and}\;\mathcal{L}_{\mathrm{seed}}\leq 5\,\mathcal{L}_{\mathrm{flat}}</div>
-<p>Three checks gate the seed:</p>
-<ul>
-  <li>Prior must have <code>ctrl_points</code> stored (older cache entries
-      with only the stitched composite are rejected &mdash; the composite is
-      a filter-weighted average across channels and maps poorly back to
-      individual control points, producing runaway RMS).</li>
-  <li><code>N_ctrl</code> must match exactly &mdash; the W-matrix hat-function
-      scale depends on hat width, which depends on <code>N_ctrl</code>.
-      An 8-pt prior into a 16-pt solver has a &sim;2&times; scale mismatch.</li>
-  <li>Prior residual RMS must be below <code>2.0</code>.</li>
-  <li>The seeded <code>x_0</code>'s loss must be no more than <code>5&times;</code>
-      the flat Stage-2 operating-point loss. If a prior is incompatible for
-      any other reason, this catches it and starts fresh instead.</li>
-</ul>
+<h4>Sessions</h4>
+<p>A convex solve has one answer whatever it starts from, so earlier sessions
+no longer seed it. Each session's control values are stored with their
+covariance (&sect;2.6); that is what the multi-session Stage&nbsp;4 needs to
+combine sessions, each weighted by how well it was measured.</p>
 
-<h4>Strict-improvement guard</h4>
-<p>Stage&nbsp;3 is strictly more expressive than Stage&nbsp;2, so it must
-match or beat it on RMS. If it doesn't &mdash; bad seed, pathological field,
-or any other reason:</p>
-<div class="matheq">\mathrm{if}\;\mathrm{RMS}_3>\mathrm{RMS}_2\;\Rightarrow\;\mathrm{revert\ to\ Stage\ 2}</div>
-<p>and the rejected ctrl_points are <i>not</i> written to the cache (so a
-bad solve can't poison the next session's seed). SSSC never regresses.</p>
+<h4>Guard</h4>
+<p>Stage&nbsp;3 is a physical model (one <code>R(&lambda;)</code> per channel for
+every star); Stage&nbsp;2 is a free quadratic fitted straight to the ratios. So
+Stage&nbsp;3's ratio RMS can sit a little above Stage&nbsp;2's and still be right.
+Far above means a wrong solve (unsuitable curves, a pathological field):</p>
+<div class="matheq">\mathrm{if}\;\mathrm{RMS}_3>1.25\,\mathrm{RMS}_2\;\Rightarrow\;\mathrm{keep\ Stage\ 2}</div>
+<p>and nothing from the rejected solve is saved.</p>
 
 <h4>What drives the pixel correction</h4>
 <p>Even for a Stage&nbsp;3 solve, the per-pixel correction applied to the
-image uses the <b>Stage&nbsp;2 quadratic coefficients</b> &mdash; the same
-pivot-at-median application as SFCC. Stage&nbsp;3's full
-<code>R(&lambda;)</code> drives the diagnostics panel and seeds the next
-session; it does not go directly to pixels. This is deliberate: the
-piecewise-linear <code>R(&lambda;)</code> on 8&ndash;16 control points can
-have mild oscillation that is harmless in integral space (the diagnostic)
-but would be loud when evaluated per pixel. The Stage&nbsp;2 quadratic is
-well-conditioned and inherits all the gain information that matters for
-colour.</p>
+image uses the <b>Stage&nbsp;2 quadratic coefficients</b> with the white
+reference (&sect;2.4). Stage&nbsp;3's <code>R(&lambda;)</code> is the
+measurement: the diagnostics panel and the session history. This is
+deliberate: a piecewise-linear <code>R(&lambda;)</code> on 8&ndash;16 control
+points can have mild oscillation that is harmless in integral space but would
+be loud when evaluated per pixel; the Stage&nbsp;2 quadratic is well-conditioned
+and carries all the gain information that matters for colour.</p>
 
 <h3>2.6 Session identity &amp; the response cache</h3>
 <p>Each solve is tagged with an 8-character session id derived from the
@@ -374,8 +438,20 @@ filter+camera configuration:</p>
 QE, so it cannot be a key. The <code>SessionResponseCache</code> is a table
 in <code>gaia_xp_cache.sqlite</code> storing the full JSON-serialised
 <code>SystemResponse</code> for every run (gains, control points, per-stage
-RMS, timestamp, B&minus;V range). Each save appends; the <b>Clear History</b>
-button issues a <code>DELETE WHERE session_id = ?</code>.</p>
+RMS, timestamp, B&minus;V range). Since 2026-11-28 each run also stores the
+covariance of its control values and what it was measured on: the filters,
+LP filters and camera label, the white reference, the image name and the
+header's DATE-AVG / DATE-OBS, AIRMASS and altitude (the observations
+Stage&nbsp;4 needs). Each save appends; <b>Clear History</b> issues a
+<code>DELETE WHERE session_id = ?</code> and <b>Delete Run</b> deletes the one
+row.</p>
+<p>The History window's combined curve is the inverse-variance weighted mean
+of the runs' control values, taken control point by control point, with
+&sigma;<sub>k,i</sub> from the diagonal of run <i>i</i>'s covariance:</p>
+<div class="matheq">\bar a_k=\frac{\sum_i a_{k,i}/\sigma_{k,i}^2}{\sum_i 1/\sigma_{k,i}^2}</div>
+<p>It is a display of agreement between nights, not yet Stage&nbsp;4: it does
+not separate the atmosphere, so nights at very different airmass will
+disagree in the blue.</p>
 
 <h3>2.7 Stage 4 (future) &mdash; hardware/atmosphere separation</h3>
 <p>Not yet shipped. With Gaia DR4 (fainter XP coverage, so &sim;10&times; more

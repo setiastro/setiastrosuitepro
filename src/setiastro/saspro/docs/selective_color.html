@@ -58,15 +58,25 @@ downsample.</p>
 
 <h2>1. The two-pane layout</h2>
 <ul>
-  <li><b>Left pane</b> &mdash; a scrollable column holding the Mask
-      group, the three adjustment groups (CMY, RGB, LSC), live/preview
-      toggles and the action buttons. Resizable via a splitter.</li>
-  <li><b>Right pane</b> &mdash; zoom toolbar, help banner, large
-      preview area, picked-hue readout, region-mask readout.</li>
+  <li><b>Left pane</b> &mdash; one column that scrolls up and down
+      (never sideways: it is always as wide as its controls) holding
+      the Mask group and the three adjustment groups (CMY, RGB, LSC),
+      with Reset, Export Mask, Apply as New Document and Apply along the
+      bottom. Resizable via a splitter.</li>
+  <li><b>Right pane</b> &mdash; zoom toolbar, the preview toggles
+      (Show mask overlay, Preview changed image, Small-sized Preview),
+      help banner, large preview area, picked-hue readout, and the
+      region-mask readout with its Clear Region Mask button.</li>
 </ul>
+<p>The Mask group reads top to bottom: the preset, the hue range
+beside the wheel, the gates that refine it, the soft mask, and an
+imported mask.</p>
+<p>The preview opens fitted to its area and stays fitted as you resize
+the window or move the splitter, until you zoom yourself. Fit goes back
+to following the window.</p>
 <p>The dialog's size, splitter position, small-preview toggle,
-live-preview toggle, mask-overlay toggle, and current zoom are all
-persisted to QSettings under the <code>selcolor/</code> namespace.</p>
+live-preview toggle and mask-overlay toggle are persisted to QSettings
+under the <code>selcolor/</code> namespace.</p>
 
 <h2>2. Building a mask</h2>
 
@@ -166,7 +176,13 @@ based on how strongly a pixel matches the colour (chroma proxy
 <code>S&times;V</code>), which reduces the blobby, hard-edged look
 you get from a pure threshold. For selecting faint nebular hues
 rather than vivid dust lanes, soft mode is almost always what you
-want.</p>
+want, so it is on by default.</p>
+<p>The <b>by</b> dropdown beside it picks what the weight follows:
+<b>Chromaticity</b> (the more vivid a pixel's colour, the more of the
+correction it gets; the lightness limits are feathered) or
+<b>Lightness</b> (none at Lightness min, full at Lightness max; at 0
+to 1 that is a luminosity mask, and Min chroma becomes a plain
+cut-off).</p>
 
 <h3>2.11 Imported mask</h3>
 <p>Two controls:</p>
@@ -216,7 +232,7 @@ Clear Region Mask</b> button to remove it.</p>
 </div>
 
 <h3>3.1 Small-sized Preview (fast)</h3>
-<p>The toggle at the top-left of the dialog controls whether the
+<p>The toggle above the preview controls whether the
 preview path operates on a downsampled copy of the image (longest
 side &le; 1200&nbsp;px) or the full resolution. Small-preview mode
 is on by default and makes the mask/preview debounce feel
@@ -290,12 +306,13 @@ their effect is strictly confined to the selected region.</p>
 <ul>
   <li><b>&#x21ba; Reset</b> &mdash; sets everything back to defaults:
       preset Red, min chroma 0.05, lightness 0&ndash;1, smoothness
-      10&deg;, invert off, soft off, shadows 0, highlights 1,
+      10&deg;, invert off, soft on (by Chromaticity), shadows 0, highlights 1,
       intensity 1.0, blur 0, mask overlay off, all adjustment
       sliders at 0.0, colour boost mode Chroma. Loaded image and
       lasso region are preserved.</li>
   <li><b>&times; Clear Region Mask</b> &mdash; removes any lasso
-      region constraint. Enabled only when a region is active.</li>
+      region constraint. Enabled only when a region is active. It sits
+      under the preview, beside the region readout.</li>
 </ul>
 
 <h2>6. Applying the result</h2>

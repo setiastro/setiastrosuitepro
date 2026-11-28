@@ -200,11 +200,13 @@ from matplotlib import pyplot as plt
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 
 from PyQt6.QtCore import (Qt, QPoint, QRect, QMimeData, QSettings, QByteArray,
-                          QDataStream, QIODevice, QEvent, QStandardPaths,QThread, pyqtSignal as _Signal)
+                          QDataStream, QIODevice, QEvent, QStandardPaths,QThread, pyqtSignal as _Signal,
+                          QObject)
 from PyQt6.QtGui import (QAction, QDrag, QIcon, QMouseEvent, QPixmap, QKeyEvent)
 from PyQt6.QtWidgets import (QToolBar, QWidget, QToolButton, QMenu, QApplication, QVBoxLayout, QHBoxLayout, QComboBox, QGroupBox, QGridLayout, QDoubleSpinBox, QSpinBox,
                              QInputDialog, QMessageBox, QDialog, QFileDialog,
-    QFormLayout, QDialogButtonBox, QDoubleSpinBox, QCheckBox, QLabel, QRubberBand, QRadioButton, QMainWindow, QPushButton)
+    QFormLayout, QDialogButtonBox, QDoubleSpinBox, QCheckBox, QLabel, QRubberBand, QRadioButton, QMainWindow, QPushButton,
+    QProgressBar)
 
 from setiastro.saspro.backgroundneutral import run_background_neutral_via_preset
 from setiastro.saspro.backgroundneutral import background_neutralize_rgb, auto_rect_50x50
@@ -423,17 +425,35 @@ def _gaiaxp_synth_bvr_cached(
                 for sid, Sr, Sg, Sb in rows_to_upsert:
                     cached[int(sid)] = (float(Sr), float(Sg), float(Sb))
 
-        # 5) Convert integrals → relative magnitudes
-        # Absolute zeropoints would require calibration; for your use (colors/templates),
-        # relative mags are usually enough. We can set an arbitrary constant so numbers
-        # look like mags (shifts cancel in colors).
+        # 5) Convert integrals → Vega-system magnitudes
+        # A colour needs a zero point PER BAND: B-V = 0 for Vega (A0V). One
+        # shared constant does not cancel in a colour; it left B-V 0.71 mag
+        # too blue against SIMBAD (ngc1333, 21 stars, IQR ±0.03; 2026-11-28).
+        # The zero points come from the Pickles A0V template integrated with
+        # the same passbands on the same grid, so A0V has B-V = V-R = 0.
+        # The cache stores the integrals, so old cache rows stay valid.
+        zp = {"B": 0.0, "V": 0.0, "R": 0.0}
+        try:
+            paths = [p for p in (getattr(self, "user_custom_path", None),
+                                 getattr(self, "sasp_data_path", None)) if p]
+            a0v = _read_sasp_tables(paths, ("A0V",), "FLUX").get("A0V")
+            if a0v is not None:
+                f_a0v = np.interp(wl_ang, a0v[0], a0v[1], left=0.0, right=0.0)
+                for band, T in (("B", T_B), ("V", T_V), ("R", T_R)):
+                    s = _integrate_flux_times_T(f_a0v, wl_nm, T)
+                    if s > 0:
+                        zp[band] = 2.5 * np.log10(s)
+            else:
+                print("[SPCC] No A0V template: synthetic B/V/R left without Vega zero points.")
+        except Exception as e:
+            print(f"[SPCC] Vega zero points unavailable ({e}); synthetic B/V/R uncorrected.")
+
         out: Dict[int, Dict[str, float]] = {}
         for sid, (Sr, Sv, Sb) in cached.items():  # note: Sv stored in Sg slot
-            # "instrumental" mags
-            # m = -2.5 log10(S) + C; choose C=0 (colors unaffected)
-            Rm = -2.5 * np.log10(max(Sr, 1e-300))
-            Vm = -2.5 * np.log10(max(Sv, 1e-300))
-            Bm = -2.5 * np.log10(max(Sb, 1e-300))
+            # m = -2.5 log10(S / S_Vega)
+            Rm = -2.5 * np.log10(max(Sr, 1e-300)) + zp["R"]
+            Vm = -2.5 * np.log10(max(Sv, 1e-300)) + zp["V"]
+            Bm = -2.5 * np.log10(max(Sb, 1e-300)) + zp["B"]
             out[int(sid)] = {"B": float(Bm), "V": float(Vm), "R": float(Rm)}
 
         return out
@@ -606,31 +626,30 @@ def _ensure_angstrom(wl: np.ndarray) -> np.ndarray:
 
 
 def pickles_match_for_simbad(simbad_sp: Optional[str], available_extnames: List[str]) -> List[str]:
+    """Pickles templates for a SIMBAD spectral type, best match first (callers
+    take [0]).
+
+    An exact letter+subclass+class match wins. Otherwise: the nearest
+    subclass, and when SIMBAD gives no luminosity class, dwarfs first
+    (V, then IV, III, II, I); when it gives no subclass, the middle of the
+    subclasses the library has for that letter. Until 2026-11-28 ties were
+    returned alphabetically, so a bare "G", "K", "B" or "A" became the
+    supergiant G0I, K01II, B0I or A0I.
+    """
     if not simbad_sp:   # handles None, "", etc.
         return []
     sp = str(simbad_sp).strip().upper()
     if not sp:
         return []
-    m = re.match(r"^([OBAFGKMLT])(\d?)(I{1,3}|IV|V)?", sp)
+    m = re.match(r"^([OBAFGKMLT])(\d?)", sp)
     if not m:
         return []
     letter_class = m.group(1)
     digit_part   = m.group(2)
-    lum_part     = m.group(3)
+    # The luminosity class can follow a range or a decimal: "B8/9V", "M6/8III", "K0.5III".
+    m_lum = re.search(r"(III|II|IV|V|I)", sp[m.end():])
+    lum_part     = m_lum.group(1) if m_lum else None
     subclass = int(digit_part) if digit_part != "" else None
-
-    def parse_pickles_extname(ext: str):
-        ext = ext.strip().upper()
-        m2 = re.match(r"^([OBAFGKMLT])(\d+)(I{1,3}|IV|V)$", ext)
-        if not m2:
-            return None, None, None
-        return m2.group(1), int(m2.group(2)), m2.group(3)
-
-    parsed_templates = []
-    for ext in available_extnames:
-        l2, d2, L2 = parse_pickles_extname(ext)
-        if l2 is not None:
-            parsed_templates.append((ext, l2, d2, L2))
 
     # Exact
     if subclass is not None and lum_part is not None:
@@ -638,44 +657,38 @@ def pickles_match_for_simbad(simbad_sp: Optional[str], available_extnames: List[
         if target in available_extnames:
             return [target]
 
-    # Same letter (+same lum if we have it)
-    same_letter_and_lum = []
-    same_letter_any_lum = []
-    for (ext, l2, d2, L2) in parsed_templates:
-        if l2 != letter_class:
-            continue
-        if lum_part is not None and L2 == lum_part:
-            same_letter_and_lum.append((ext, d2))
-        else:
-            same_letter_any_lum.append((ext, d2))
+    def _sub(digits: str) -> float:
+        # Pickles names a subclass range with two digits: B57V is B5-7 V,
+        # K01II is K0-1 II. Two ascending digits are a range (midpoint);
+        # anything else is the number itself (M10III is M10).
+        if len(digits) == 2 and digits[1] > digits[0]:
+            return (int(digits[0]) + int(digits[1])) / 2.0
+        return float(int(digits))
 
-    def pick_nearest(candidates: List[Tuple[str, int]], target: int) -> List[str]:
-        if not candidates or target is None:
-            return []
-        arr = np.abs(np.array([d for _, d in candidates]) - target)
-        mind = np.min(arr)
-        return [candidates[i][0] for i in np.where(arr == mind)[0]]
+    same_letter = []
+    for ext in available_extnames:
+        m2 = re.match(r"^([OBAFGKMLT])(\d+)(I{1,3}|IV|V)$", ext.strip().upper())
+        if m2 and m2.group(1) == letter_class:
+            same_letter.append((ext, _sub(m2.group(2)), m2.group(3)))
+    if not same_letter:
+        return []
 
-    if subclass is not None and lum_part is not None:
-        if same_letter_and_lum:
-            return pick_nearest(same_letter_and_lum, subclass)
-        if same_letter_any_lum:
-            return pick_nearest(same_letter_any_lum, subclass)
+    pool = same_letter
+    if lum_part is not None:
+        same_lum = [c for c in same_letter if c[2] == lum_part]
+        pool = same_lum or same_letter
+    if subclass is None:
+        subs = sorted(c[1] for c in pool)
+        subclass = subs[len(subs) // 2]
 
-    if subclass is not None and lum_part is None:
-        if same_letter_any_lum:
-            return pick_nearest(same_letter_any_lum, subclass)
+    lum_rank = {"V": 0, "IV": 1, "III": 2, "II": 3, "I": 4}
 
-    if subclass is None and lum_part is None:
-        return sorted([ext for (ext, l2, _, _) in parsed_templates if l2 == letter_class])
+    def key(c):
+        ext, d2, L2 = c
+        lum_key = 0 if (lum_part is not None and L2 == lum_part) else 1 + lum_rank.get(L2, 9)
+        return (abs(d2 - subclass), lum_key, ext)
 
-    if subclass is None and lum_part is not None:
-        cands = [ (ext, d2) for (ext, l2, d2, L2) in parsed_templates if l2 == letter_class and L2 == lum_part ]
-        if cands:
-            return sorted([ext for (ext, _) in cands])
-        return sorted([ext for (ext, l2, _, _) in parsed_templates if l2 == letter_class])
-
-    return []
+    return [c[0] for c in sorted(pool, key=key)]
 
 
 def compute_gradient_map(sources, delta_flux, shape, method="poly2"):
@@ -851,6 +864,516 @@ def _pivot_scale_channel(ch: np.ndarray, gain: np.ndarray | float, pivot: float)
     gain can be scalar or per-pixel array.
     """
     return pivot + (ch - pivot) * gain
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Shared fast paths (SFCC, SSSC, NBExtract)
+#
+# Measured on a 4129x3000 RGB frame (ngc1333, 2026-11-28) the two-step flow
+# spent 37 s: the σ waterfall twice (10 s each; Step 2 re-detected the very
+# stars Step 1 had found), photometry that copied every channel once per star
+# (33 ms a star), every curve read by reopening the FITS file, and SIMBAD
+# waiting behind detection. These keep every number the same and drop the time.
+# ──────────────────────────────────────────────────────────────────────────────
+
+def _gray_for_sep(base: np.ndarray) -> np.ndarray:
+    """Channel mean of an (H, W, 3) float32 image for SEP.
+
+    Bit-identical to np.mean(base, axis=2) on float32 input (same adds, same
+    order, one divide) and about 3x faster: a reduction over the last axis of
+    an HWC array is slow.
+    """
+    b = np.asarray(base, dtype=np.float32)
+    return ((b[..., 0] + b[..., 1] + b[..., 2]) / np.float32(3.0)).astype(np.float32, copy=False)
+
+
+_SEP_SRAND: list = []        # [] untried, [None] unavailable, [fn] srand
+
+# With at least this many Gaia XP calibrators, SFCC fits on them alone and
+# leaves Pickles templates out (see run_spcc). SSSC uses its Stage 2 minimum.
+SFCC_MIN_XP_ONLY = 50
+
+
+def _seed_sep_rng() -> None:
+    """srand(1) in the C runtime SEP links against, right before a detection.
+
+    SEP's deblender draws from rand(), so two sep.extract calls on the same
+    image gave star sizes up to 0.7 px apart on ngc1333, and with them the
+    aperture radii: the old two-step flow calibrated the same image 2-3e-4
+    differently run to run. Reseeded, a frame always gives the same stars.
+    Same as star_alignment._seed_sep_rng / Quick Stack. The CRT's rand()
+    state is per thread on Windows, so call it on the detecting thread."""
+    if not _SEP_SRAND:
+        fn = None
+        try:
+            import ctypes
+            lib = ctypes.cdll.ucrtbase if os.name == "nt" else ctypes.CDLL(None)
+            fn = lib.srand
+        except Exception:
+            fn = None
+        _SEP_SRAND.append(fn)
+    fn = _SEP_SRAND[0]
+    if fn is not None:
+        try:
+            fn(1)
+        except Exception:
+            pass
+
+
+def _sep_count_proxy(data_sub: np.ndarray, err: float, sigmas) -> dict:
+    """Rough detection count per σ: peaks of the 3x3-smoothed image above σ·err.
+
+    Only picks where the σ search starts. Every σ that is used goes through
+    sep.extract itself. On ngc1333 it read 10-70 % above SEP's counts.
+    """
+    k = np.array([[1, 2, 1], [2, 4, 2], [1, 2, 1]], np.float32) / np.float32(16.0)
+    f = cv2.filter2D(np.ascontiguousarray(data_sub, dtype=np.float32), -1, k,
+                     borderType=cv2.BORDER_REFLECT)
+    mx = cv2.dilate(f, np.ones((3, 3), np.uint8))
+    peaks = f[(f >= mx) & (f > float(min(sigmas)) * err)]
+    return {s: int(np.count_nonzero(peaks > float(s) * err)) for s in sigmas}
+
+
+def sep_detect_auto_sigma(data_sub: np.ndarray, err: float, ladder, min_stars: int,
+                          *, status_cb: Optional[Callable[[str], None]] = None):
+    """The auto-σ waterfall: the strictest σ in `ladder` (strict to loose) that
+    detects at least `min_stars` sources, or the loosest σ when none does.
+    Returns (sources, sigma).
+
+    Picks the same σ as trying the ladder from the top, in two or three
+    sep.extract passes instead of up to seven. Detection counts only grow as σ
+    drops, so the answer is the σ that passes while the next stricter one
+    fails. _sep_count_proxy chooses where to start looking.
+    """
+    ladder = [float(s) for s in ladder]
+    last = len(ladder) - 1
+    found: dict = {}
+
+    def count_at(k: int) -> int:
+        if k not in found:
+            if status_cb is not None:
+                status_cb(f"trying σ={ladder[k]:.1f}")
+            try:
+                _seed_sep_rng()
+                found[k] = sep.extract(data_sub, ladder[k], err=err)
+            except Exception:
+                found[k] = None      # no detections at this σ; keep looking
+        srcs = found[k]
+        return 0 if srcs is None else int(srcs.size)
+
+    try:
+        proxy = _sep_count_proxy(data_sub, err, ladder)
+        k = next((i for i, s in enumerate(ladder) if proxy[s] >= min_stars), last)
+    except Exception:
+        k = 0
+
+    if count_at(k) >= min_stars:
+        while k > 0 and count_at(k - 1) >= min_stars:
+            k -= 1
+        return found[k], ladder[k]
+    while k < last:
+        k += 1
+        if count_at(k) >= min_stars:
+            return found[k], ladder[k]
+    srcs = found.get(last)
+    if srcs is None:
+        _seed_sep_rng()
+        srcs = sep.extract(data_sub, ladder[last], err=err)
+    return srcs, ladder[last]
+
+
+def measure_stars_rgb_photometry(img_rgb_f32: np.ndarray, xs, ys, r, rin, rout) -> list:
+    """measure_star_rgb_photometry for many stars in one pass.
+
+    Each star's result is identical (the same SEP sums, the same float64
+    arithmetic); the channels are split once instead of once per star, which
+    was 33 ms a star on a 12 Mpx frame. Returns a list aligned with xs: that
+    star's dict, or None where SEP flagged any channel.
+    """
+    xs = np.asarray(xs, dtype=np.float64)
+    ys = np.asarray(ys, dtype=np.float64)
+    n = int(xs.size)
+    if n == 0:
+        return []
+    r = np.broadcast_to(np.asarray(r, dtype=np.float64), (n,)).copy()
+    rin = np.broadcast_to(np.asarray(rin, dtype=np.float64), (n,)).copy()
+    rout = np.broadcast_to(np.asarray(rout, dtype=np.float64), (n,)).copy()
+    ap_area = np.pi * r * r
+    ann_area = np.pi * (rout * rout - rin * rin)
+
+    per_ch = []
+    bad = np.zeros(n, dtype=bool)
+    for c in range(3):
+        ch = np.ascontiguousarray(img_rgb_f32[..., c], dtype=np.float32)
+        raw = sep.sum_circle(ch, xs, ys, r, subpix=5)
+        ann = sep.sum_circann(ch, xs, ys, rin, rout, subpix=5)
+        raw_sum = np.asarray(raw[0], dtype=np.float64)
+        ann_sum = np.asarray(ann[0], dtype=np.float64)
+        bad |= (np.asarray(raw[-1]).astype(np.int64) | np.asarray(ann[-1]).astype(np.int64)) != 0
+        mu_bg = ann_sum / np.maximum(ann_area, 1e-12)
+        per_ch.append((raw_sum, ann_sum, mu_bg, raw_sum - mu_bg * ap_area))
+
+    out = []
+    for i in range(n):
+        if bad[i]:
+            out.append(None)
+            continue
+        d = {"area_ap": float(ap_area[i]), "area_ann": float(ann_area[i])}
+        for name, (raw_sum, ann_sum, mu_bg, star_sum) in zip("RGB", per_ch):
+            d[name] = {"raw_sum": float(raw_sum[i]), "ann_sum": float(ann_sum[i]),
+                       "mu_bg": float(mu_bg[i]), "star_sum": float(star_sum[i])}
+        out.append(d)
+    return out
+
+
+_SASP_TABLE_CACHE: dict = {}      # path -> ((mtime_ns, size), {EXTNAME: {...}})
+
+
+def _sasp_tables(path: str) -> dict:
+    """Every curve / SED table in a SASP-format FITS file, read once per
+    session: {EXTNAME (upper case): {"ctype": ..., "WAVELENGTH": ...,
+    "THROUGHPUT"/"FLUX": ...}}. Re-read when the file changes (the Curve
+    Manager writes the user file). The shipped file has 351 tables; opening it
+    and finding one cost about 0.3 s every time."""
+    st = os.stat(path)
+    stamp = (st.st_mtime_ns, st.st_size)
+    hit = _SASP_TABLE_CACHE.get(path)
+    if hit is not None and hit[0] == stamp:
+        return hit[1]
+    tables: dict = {}
+    with fits.open(path, memmap=False) as hd:
+        for hdu in hd:
+            if not isinstance(hdu, fits.BinTableHDU):
+                continue
+            key = str(hdu.name).strip().upper()
+            if not key or key in tables:          # first one wins, as hd[name] did
+                continue
+            entry = {"ctype": str(hdu.header.get("CTYPE", "")).upper(),
+                     "extname": hdu.header.get("EXTNAME", "")}
+            try:
+                names = set(hdu.columns.names)
+                for col in ("WAVELENGTH", "THROUGHPUT", "FLUX"):
+                    if col in names:
+                        entry[col] = np.array(hdu.data[col])
+            except Exception:
+                pass
+            tables[key] = entry
+    _SASP_TABLE_CACHE[path] = (stamp, tables)
+    return tables
+
+
+def _read_sasp_tables(paths, names, value_col: str) -> dict:
+    """{name: (wavelength in Å, values)} for each curve or SED name, from the
+    first file in `paths` that has it (user curves before the shipped ones,
+    as before). Names that no file has are left out."""
+    out: dict = {}
+    want = [n for n in dict.fromkeys(names) if n and n != "(None)"]
+    for p in paths:
+        missing = [n for n in want if n not in out]
+        if not missing:
+            break
+        try:
+            tables = _sasp_tables(p)
+        except FileNotFoundError:
+            continue
+        for n in missing:
+            t = tables.get(str(n).strip().upper())
+            if t is not None and "WAVELENGTH" in t and value_col in t:
+                out[n] = (_ensure_angstrom(np.asarray(t["WAVELENGTH"]).astype(float)),
+                          np.asarray(t[value_col]).astype(float))
+    return out
+
+
+SIMBAD_FIELDS = ("sp", "B", "V", "R", "ra", "dec", "main_id")
+SIMBAD_LEGACY_FIELDS = ("sp", "flux(B)", "flux(V)", "flux(R)", "ra(d)", "dec(d)", "main_id")
+
+
+class _SimbadPrefetch:
+    """The SIMBAD region query on a plain Python thread, so the window keeps
+    painting while it runs and no modal progress box is needed.
+
+    Start it after star detection, not before: sep.extract holds the GIL for
+    seconds at a time, so an overlapping query stalls until its mirror probe
+    times out and fails over (measured 2026-11-28).
+
+    Nothing here touches Qt. Status lines are kept for the GUI thread to show,
+    and retries sleep with time.sleep (cds_health's default sleep pumps Qt
+    events). with_ids adds SIMBAD's identifier list to each row, so the
+    "Gaia DR3 <id>" lookup needs no second query.
+    """
+
+    def __init__(self, center_sky, radius, *, with_ids: bool = False, timeout: float = 30.0):
+        import threading
+        self.result = None
+        self.messages: list = []
+        self._done = threading.Event()
+        extra = ("ids",) if with_ids else ()
+        self._fields = SIMBAD_FIELDS + extra
+        self._legacy = SIMBAD_LEGACY_FIELDS + extra
+        self._args = (center_sky, radius, float(timeout))
+        threading.Thread(target=self._run, name="sfcc-simbad", daemon=True).start()
+
+    def _run(self):
+        center_sky, radius, timeout = self._args
+        try:
+            budget = cds_health.Budget()
+            simbad = cds_health.prepare_simbad(
+                status_cb=self.messages.append, timeout=timeout,
+                fields=self._fields, legacy_fields=self._legacy)
+            if simbad is not None:
+                self.result = cds_health.call_simbad(
+                    simbad.query_region, center_sky, radius=radius,
+                    status_cb=self.messages.append, budget=budget, attempts=2,
+                    sleep=time.sleep, label="SIMBAD region query")
+        except Exception as e:                       # noqa: BLE001
+            self.messages.append(f"SIMBAD query failed: {e} — continuing without SIMBAD.")
+        finally:
+            self._done.set()
+
+    def done(self) -> bool:
+        return self._done.is_set()
+
+    def wait(self):
+        """Block the caller (the GUI thread) until the query ends, keeping the
+        window painting. Returns the result table or None."""
+        while not self._done.wait(0.05):
+            QApplication.processEvents()
+        return self.result
+
+
+def _simbad_gaia_dr3_id(ids_value) -> Optional[int]:
+    """The Gaia DR3 source id in a SIMBAD "ids" string ("HD 1|Gaia DR3 123|..."),
+    or None."""
+    try:
+        for part in str(ids_value).split("|"):
+            part = part.strip()
+            if part.startswith("Gaia DR3 "):
+                return int(part[len("Gaia DR3 "):].strip())
+    except (TypeError, ValueError):
+        pass
+    return None
+
+
+def _image_root(img):
+    """The array that owns `img`'s memory (a Preview-tab document returns a
+    fresh slice of its parent on every access), or None."""
+    root = img
+    while isinstance(getattr(root, "base", None), np.ndarray):
+        root = root.base
+    return root
+
+
+class _RunButtonState(QObject):
+    """The run button after a successful calibration: a quiet "Calibrated ✓"
+    instead of the bright Calibrate, which read as "press me again". It goes
+    back to Calibrate as soon as another run would mean something: a setting
+    changes, another view becomes active, or the calibrated image changes
+    (Undo, any edit). It stays clickable in the done state.
+
+    Texts come in already translated by the dialog (tr() context = the dialog).
+    Call shutdown() when the dialog closes: it is connected to the main
+    window and to the calibrated document.
+    """
+
+    def __init__(self, dlg, button, idle_text: str, done_text: str,
+                 idle_tip: str, done_tip: str):
+        super().__init__(dlg)
+        self._btn = button
+        self._idle = (idle_text, idle_tip)
+        self._done_ui = (done_text, done_tip)
+        self.done = False
+        self._doc = None
+        self._root = None
+        self._shape = None
+        self._main = getattr(dlg, "main_win", None)
+        self._follow_conn = None
+        if self._main is not None and hasattr(self._main, "currentDocumentChanged"):
+            try:
+                self._main.currentDocumentChanged.connect(self._on_active_changed)
+                self._follow_conn = True
+            except Exception:
+                self._follow_conn = None
+
+    def watch(self, *widgets):
+        """Any change to these controls re-arms the button."""
+        for w in widgets:
+            if w is None:
+                continue
+            for sig in ("currentIndexChanged", "toggled", "valueChanged", "textChanged"):
+                s = getattr(w, sig, None)
+                if s is not None:
+                    try:
+                        s.connect(self.rearm)
+                        break
+                    except Exception:
+                        pass
+
+    def _same_image(self, doc) -> bool:
+        img = getattr(doc, "image", None)
+        return (img is not None and self._root is not None
+                and _image_root(img) is self._root and img.shape == self._shape)
+
+    def mark_done(self, doc):
+        self._release_doc()
+        img = getattr(doc, "image", None) if doc is not None else None
+        if img is None:
+            return
+        self._doc = doc
+        self._root = _image_root(img)
+        self._shape = img.shape
+        try:
+            doc.changed.connect(self._on_doc_changed)
+        except Exception:
+            pass
+        self.done = True
+        self._btn.setText(self._done_ui[0])
+        self._btn.setToolTip(self._done_ui[1])
+        self._btn.setStyleSheet("")
+        self._btn.setDefault(False)
+
+    def rearm(self, *_):
+        if not self.done:
+            return
+        self.done = False
+        self._release_doc()
+        self._btn.setText(self._idle[0])
+        self._btn.setToolTip(self._idle[1])
+        self._btn.setStyleSheet(_primary_button_sheet())
+        self._btn.setDefault(True)
+
+    def _on_doc_changed(self):
+        if self.done and not self._same_image(self._doc):
+            self.rearm()
+
+    def _on_active_changed(self, doc):
+        if self.done and not self._same_image(doc):
+            self.rearm()
+
+    def _release_doc(self):
+        if self._doc is not None:
+            try:
+                self._doc.changed.disconnect(self._on_doc_changed)
+            except Exception:
+                pass
+        self._doc = None
+        self._root = None
+        self._shape = None
+
+    def shutdown(self, *_):
+        self._release_doc()
+        if self._follow_conn and self._main is not None:
+            try:
+                self._main.currentDocumentChanged.disconnect(self._on_active_changed)
+            except Exception:
+                pass
+        self._follow_conn = None
+
+
+def _primary_button_sheet() -> str:
+    """The run button: the theme's selection colour, the one thing to press."""
+    from setiastro.saspro.widgets.theme_colors import CONTROL_RADIUS, theme_colors
+    c = theme_colors()
+    return (
+        f"QPushButton {{ background: {c.accent.name()}; color: {c.on_accent.name()};"
+        f" border: 1px solid {c.accent.name()}; border-radius: {CONTROL_RADIUS}px;"
+        f" padding: 5px 18px; font-weight: bold; }}"
+        f" QPushButton:hover {{ background: {c.accent_hover.name()}; }}"
+        f" QPushButton:disabled {{ background: {c.raised.name()}; color: {c.muted.name()};"
+        f" border-color: {c.line.name()}; }}")
+
+
+def _relayout_on_draw(fig, rect=None) -> None:
+    """Lay the axes out again on every draw: the results panel may still be
+    hidden, or about to grow, when the charts are made. Also sets the
+    smaller type a grid of four to six charts needs. `rect` keeps room for
+    a suptitle."""
+    for ax in fig.axes:
+        ax.title.set_fontsize(10)
+        ax.xaxis.label.set_fontsize(8)
+        ax.yaxis.label.set_fontsize(8)
+        ax.tick_params(labelsize=7)
+        leg = ax.get_legend()
+        if leg is not None:
+            for t in leg.get_texts():
+                t.set_fontsize(7)
+    if getattr(fig, "_suptitle", None) is not None:
+        fig._suptitle.set_fontsize(10)
+    try:
+        if rect is not None:
+            fig.set_layout_engine("tight", rect=rect)
+        else:
+            fig.set_layout_engine("tight")
+    except Exception:
+        try:
+            fig.set_tight_layout(True)
+        except Exception:
+            pass
+
+
+def _star_source_counts(star_list: list):
+    """Where each star's spectrum comes from, in exclusive buckets:
+    (Gaia XP, Pickles via SIMBAD type, Pickles via B-V, none)."""
+    n_gaia_xp = sum(1 for s in star_list if s.get("gaia_source_id") is not None)
+    n_simbad_pickles = sum(1 for s in star_list
+                           if s.get("gaia_source_id") is None
+                           and s.get("sp_source") == "simbad"
+                           and s.get("pickles_match") is not None)
+    n_bv_pickles = sum(1 for s in star_list
+                       if s.get("gaia_source_id") is None
+                       and s.get("sp_source") == "bv_inferred")
+    n_none = len(star_list) - n_gaia_xp - n_simbad_pickles - n_bv_pickles
+    return n_gaia_xp, n_simbad_pickles, n_bv_pickles, n_none
+
+
+def _draw_star_summary(ax_types, ax_sources, star_list: list, templates_for_hist: list):
+    """The two star charts: spectral-type distribution (Pickles + B-V inferred)
+    and where each star's spectrum came from."""
+    if templates_for_hist:
+        uniq, cnt = np.unique(templates_for_hist, return_counts=True)
+        ax_types.bar(uniq, cnt, edgecolor="black", color="#5588cc", label="Pickles")
+    bv_types = [s["sp_clean"] for s in star_list
+                if s.get("sp_source") == "bv_inferred" and s.get("sp_clean")]
+    if bv_types:
+        bv_uniq, bv_cnt = np.unique(bv_types, return_counts=True)
+        ax_types.bar(bv_uniq, bv_cnt, edgecolor="black", color="#cc8844",
+                     alpha=0.7, label="B-V inferred")
+    ax_types.set_xlabel("Spectral Type")
+    ax_types.set_ylabel("Count")
+    ax_types.set_title("Spectral Type Distribution")
+    ax_types.tick_params(axis="x", rotation=90)
+    ax_types.grid(axis="y", linestyle="--", alpha=0.3)
+    if templates_for_hist or bv_types:
+        ax_types.legend(fontsize=8)
+    # Dozens of Pickles types: label every n-th bar so the names can be read.
+    ticks = ax_types.get_xticklabels()
+    if len(ticks) > 24:
+        step = int(np.ceil(len(ticks) / 24.0))
+        for i, t in enumerate(ticks):
+            t.set_visible(i % step == 0)
+
+    n_gaia_xp, n_simbad_pickles, n_bv_pickles, n_none = _star_source_counts(star_list)
+    labels, sizes, colors = [], [], []
+    for label, size, color in [
+        (f"Gaia XP ({n_gaia_xp})",               n_gaia_xp,        "#44cc88"),
+        (f"Pickles/SIMBAD ({n_simbad_pickles})",  n_simbad_pickles, "#5588cc"),
+        (f"Pickles/B-V ({n_bv_pickles})",         n_bv_pickles,     "#cc8844"),
+        (f"No spectrum ({n_none})",                n_none,           "#555555"),
+    ]:
+        if size > 0:
+            labels.append(label)
+            sizes.append(size)
+            colors.append(color)
+    if sizes:
+        # Names in a legend, not on the wedges: thin wedges piled their
+        # labels on top of each other.
+        wedges, _t, _a = ax_sources.pie(
+            sizes, colors=colors, startangle=90, counterclock=False,
+            autopct=lambda p: f"{p:.0f}%" if p >= 4 else "",
+            pctdistance=0.72, textprops={"fontsize": 8})
+        ax_sources.legend(wedges, labels, loc="center left", bbox_to_anchor=(0.92, 0.5),
+                          fontsize=8, frameon=False)
+    ax_sources.set_title("Calibration Source Breakdown")
+    return n_gaia_xp, n_simbad_pickles, n_bv_pickles, n_none
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Simple responses viewer (unchanged core logic; useful for diagnostics)
@@ -1235,7 +1758,8 @@ class SFCCDialog(QDialog):
         self.finished.connect(lambda *_: self._disconnect_curve_library())
 
         self.grad_method = "poly3"
-        self.grad_method_combo.currentTextChanged.connect(lambda m: setattr(self, "grad_method", m))
+        if getattr(self, "grad_method_combo", None) is not None:      # two-step layout only
+            self.grad_method_combo.currentTextChanged.connect(lambda m: setattr(self, "grad_method", m))
 
     # ── View plumbing ───────────────────────────────────────────────────
     def _get_active_image_and_header(self):
@@ -1315,6 +1839,293 @@ class SFCCDialog(QDialog):
     # ── UI ──────────────────────────────────────────────────────────────
 
     def _build_ui(self):
+        """One click: the settings on the left, Calibrate under them, and the
+        results (hidden until the first run) on the right.
+
+        NBExtract builds on the two-step layout instead (_build_steps_ui):
+        it hides SFCC's controls in it by name and inserts its own.
+        """
+        outer = QHBoxLayout(self)
+
+        # ── Settings column ────────────────────────────────────────────
+        self.settings_panel = QWidget()
+        col = QVBoxLayout(self.settings_panel)
+        col.setContentsMargins(0, 0, 0, 0)
+        outer.addWidget(self.settings_panel, 0)
+
+        chain = QGroupBox(self.tr("Optical Chain"))
+        form = QFormLayout(chain)
+        form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
+
+        self.star_combo = QComboBox()
+        self.star_combo.addItem(self.tr("Vega (A0V)"), userData="A0V")
+        for sed in getattr(self, "sed_list", []):
+            if sed.upper() == "A0V": continue
+            self.star_combo.addItem(sed, userData=sed)
+        idx_g2v = self.star_combo.findData("G2V")
+        if idx_g2v >= 0: self.star_combo.setCurrentIndex(idx_g2v)
+        self.star_combo.setToolTip(self.tr(
+            "The star that should come out white. G2V (the Sun) is the usual choice;\n"
+            "an average spiral galaxy is close to it."))
+
+        def _combo(items):
+            cb = QComboBox(); cb.addItem("(None)"); cb.addItems(items)
+            cb.setMinimumContentsLength(18)
+            cb.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+            return cb
+
+        self.sens_combo       = _combo(self.sensor_list)
+        self.r_filter_combo   = _combo(self.filter_list)
+        self.g_filter_combo   = _combo(self.filter_list)
+        self.b_filter_combo   = _combo(self.filter_list)
+        self.lp_filter_combo  = _combo(self.filter_list)
+        self.lp_filter_combo2 = _combo(self.filter_list)
+        self.sens_combo.setToolTip(self.tr("The camera's sensor (its QE curve)."))
+        for cb in (self.lp_filter_combo, self.lp_filter_combo2):
+            cb.setToolTip(self.tr("Light-pollution or UV/IR-cut filters in the light path, if any."))
+
+        form.addRow(self.tr("Select White Reference:"), self.star_combo)
+        form.addRow(self.tr("Sensor (QE):"), self.sens_combo)
+        form.addRow(self.tr("R Filter:"), self.r_filter_combo)
+        form.addRow(self.tr("G Filter:"), self.g_filter_combo)
+        form.addRow(self.tr("B Filter:"), self.b_filter_combo)
+        form.addRow(self.tr("LP/Cut Filter1:"), self.lp_filter_combo)
+        form.addRow(self.tr("LP/Cut Filter2:"), self.lp_filter_combo2)
+
+        tools = QHBoxLayout()
+        self.curve_mgr_btn = QPushButton(self.tr("Filter / Sensor Curves…"))
+        self.curve_mgr_btn.setToolTip(self.tr(
+            "Open the Curve Manager: add, label, edit, share or delete filter and sensor curves\n"
+            "(paste data, import a CSV, digitize a chart image, or generate a bandpass)."))
+        self.curve_mgr_btn.clicked.connect(self.open_curve_manager)
+        self.open_sasp_btn = QPushButton(self.tr("Open SASP Viewer"))
+        self.open_sasp_btn.setToolTip(self.tr(
+            "Plot the filter, sensor and star curves against each other."))
+        self.open_sasp_btn.clicked.connect(self.open_sasp_viewer)
+        tools.addWidget(self.curve_mgr_btn)
+        tools.addWidget(self.open_sasp_btn)
+        form.addRow(tools)
+        col.addWidget(chain)
+
+        opts = QGroupBox(self.tr("Options"))
+        ol = QVBoxLayout(opts)
+        self.neutralize_chk = QCheckBox(self.tr("Background Neutralization"))
+        self.neutralize_chk.setChecked(False)
+        self.neutralize_chk.setToolTip(self.tr(
+            "Also make the sky background neutral grey after calibrating."))
+        ol.addWidget(self.neutralize_chk)
+        sig_row = QHBoxLayout()
+        sig_row.addWidget(QLabel(self.tr("Star detect σ:")))
+        self.sep_thr_spin = QSpinBox()
+        self.sep_thr_spin.setRange(2, 100)
+        self.sep_thr_spin.setValue(5)             # = load_settings' default, what users get
+        self.sep_thr_spin.valueChanged.connect(self.save_sep_threshold_setting)
+        sig_row.addWidget(self.sep_thr_spin)
+        self.auto_sigma_chk = QCheckBox(self.tr("Auto"))
+        self.auto_sigma_chk.setToolTip(self.tr(
+            "Auto σ waterfall:\n"
+            "  Tries σ = 100, 50, 25, 12, 8, 5, 3 in order and stops at the\n"
+            "  first value that yields ≥ 1200 detections. Removes the need to\n"
+            "  guess a threshold for different fields.\n\n"
+            "  Uncheck to use the manual σ value in the spin box."
+        ))
+        self.auto_sigma_chk.setChecked(True)
+        self.auto_sigma_chk.toggled.connect(self._on_auto_sigma_toggled)
+        sig_row.addWidget(self.auto_sigma_chk)
+        sig_row.addStretch(1)
+        self.sep_thr_spin.setEnabled(not self.auto_sigma_chk.isChecked())
+        ol.addLayout(sig_row)
+        col.addWidget(opts)
+        col.addStretch(1)
+
+        self.count_label = QLabel(self.tr("Calibrates the colour of the active view from the "
+                                          "spectra of the stars in it. It needs a plate solution "
+                                          "and offers to make one."))
+        self.count_label.setWordWrap(True)
+        self.count_label.setMinimumWidth(300)
+        col.addWidget(self.count_label)
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setRange(0, 0)
+        self.progress_bar.setTextVisible(False)
+        self.progress_bar.setMaximumHeight(6)
+        self.progress_bar.setVisible(False)
+        col.addWidget(self.progress_bar)
+
+        actions = QHBoxLayout()
+        self.factory_reset_btn = make_reset_button(self)
+        self.factory_reset_btn.clicked.connect(self._reset_to_factory)
+        actions.addWidget(self.factory_reset_btn)
+        actions.addStretch(1)
+        self.close_btn = QPushButton(self.tr("Close")); self.close_btn.clicked.connect(self.reject)
+        actions.addWidget(self.close_btn)
+        self.run_btn = QPushButton(self.tr("Calibrate"))
+        self.run_btn.setDefault(True)
+        self.run_btn.setAutoDefault(True)
+        run_tip = self.tr(
+            "Find the stars, look up their spectra, measure them and correct the colour\n"
+            "of the active view, all in one go.")
+        self.run_btn.setToolTip(run_tip)
+        self.run_btn.setStyleSheet(_primary_button_sheet())
+        self.run_btn.clicked.connect(self.calibrate)
+        actions.addWidget(self.run_btn)
+        col.addLayout(actions)
+        # After a run: a quiet "Calibrated ✓" until something changes.
+        self._run_state = _RunButtonState(
+            self, self.run_btn, self.tr("Calibrate"), self.tr("Calibrated ✓"), run_tip,
+            self.tr("Applied to this image. It turns back into Calibrate when you change a setting,\n"
+            "switch to another image or undo."))
+        self._run_state.watch(self.star_combo, self.sens_combo, self.r_filter_combo,
+                              self.g_filter_combo, self.b_filter_combo, self.lp_filter_combo,
+                              self.lp_filter_combo2, self.neutralize_chk, self.sep_thr_spin,
+                              self.auto_sigma_chk)
+        self.finished.connect(self._run_state.shutdown)
+
+        # Grip + help: their own row, last in the controls column.
+        from setiastro.saspro.shortcuts import ShortcutGrip
+        self.shortcut_grip = ShortcutGrip("sfcc", self)
+        self.btn_help = make_help_button("sfcc", self)
+        grip_row = QHBoxLayout()
+        grip_row.setContentsMargins(0, 0, 0, 0)
+        grip_row.addWidget(self.shortcut_grip)
+        grip_row.addWidget(self.btn_help, 0, Qt.AlignmentFlag.AlignRight)
+        col.addLayout(grip_row)
+
+        # ── Results: summary + every chart, after a run ────────────────
+        self.results_panel = QWidget()
+        rl = QVBoxLayout(self.results_panel)
+        rl.setContentsMargins(0, 0, 0, 0)
+        self.summary_label = QLabel("")
+        self.summary_label.setWordWrap(True)
+        self.summary_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        rl.addWidget(self.summary_label)
+        self.figure = Figure(figsize=(8, 6))
+        self.canvas = FigureCanvas(self.figure)
+        self.canvas.setMinimumSize(600, 480)
+        rl.addWidget(self.canvas, 1)
+        self.results_panel.setVisible(False)
+        outer.addWidget(self.results_panel, 1)
+
+        # No 3×3 matrix or gradient controls: both were hidden in the two-step
+        # layout too, and run_spcc treats a missing color_matrix_chk as off.
+        self.setMinimumSize(0, 0)
+
+    def changeEvent(self, ev):
+        from setiastro.saspro.widgets.theme_colors import PALETTE_EVENTS, restyle
+        if (ev.type() in PALETTE_EVENTS and getattr(self, "run_btn", None) is not None
+                and not getattr(getattr(self, "_run_state", None), "done", False)):
+            restyle(self.run_btn, _primary_button_sheet())
+        super().changeEvent(ev)
+
+    def reject(self):
+        if getattr(self, "_running", False):
+            return            # a run is pumping events; closing now would pull the dialog out from under it
+        super().reject()
+
+    def _set_running(self, on: bool):
+        self._running = bool(on)
+        for w in (getattr(self, "run_btn", None), getattr(self, "close_btn", None),
+                  getattr(self, "factory_reset_btn", None), getattr(self, "settings_panel", None)):
+            if w is not None:
+                w.setEnabled(not on)
+        pb = getattr(self, "progress_bar", None)
+        if pb is not None:
+            pb.setVisible(bool(on))
+
+    def _ensure_plate_solution(self) -> bool:
+        """The active view has a celestial WCS, or the user had it solved now."""
+        doc = self.doc_manager.get_active_document()
+        if doc is None or getattr(doc, "image", None) is None:
+            QMessageBox.warning(self, self.tr("No Image"),
+                                self.tr("Open an image and make it the active view first."))
+            return False
+        _img, hdr, _meta = self._get_active_image_and_header()
+        try:
+            if hdr is not None:
+                self.initialize_wcs_from_header(hdr)
+                # An unsolved header still makes a WCS, just not a celestial one.
+                if getattr(getattr(self, "wcs", None), "has_celestial", False):
+                    return True
+        except Exception:
+            pass
+        resp = QMessageBox.question(
+            self, self.tr("No Plate Solution"),
+            self.tr("This image isn't plate-solved yet. Run the plate solver now?"),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes)
+        if resp != QMessageBox.StandardButton.Yes:
+            return False
+        from setiastro.saspro.plate_solver import plate_solve_doc_inplace
+        _sfcc_status(self, "Plate solving…")
+        try:
+            ok, res = plate_solve_doc_inplace(self.main_win or self, doc, QSettings())
+        except Exception as e:
+            QMessageBox.critical(self, self.tr("Plate Solve Error"), str(e))
+            return False
+        if not ok:
+            QMessageBox.critical(self, self.tr("Plate Solve Failed"), str(res))
+            return False
+        return True
+
+    def _check_chain(self) -> bool:
+        """The choices run_spcc needs, checked before the slow part starts."""
+        if not self.star_combo.currentData():
+            QMessageBox.warning(self, self.tr("Error"), self.tr("Select a reference spectral type (e.g. A0V)."))
+            return False
+        if all(cb.currentText() == "(None)"
+               for cb in (self.r_filter_combo, self.g_filter_combo, self.b_filter_combo)):
+            QMessageBox.warning(self, self.tr("Error"), self.tr("Pick at least one of R, G or B filters."))
+            return False
+        if self.sens_combo.currentText() == "(None)":
+            QMessageBox.warning(self, self.tr("Error"), self.tr("Select a sensor QE curve."))
+            return False
+        doc = self.doc_manager.get_active_document()
+        img = getattr(doc, "image", None) if doc is not None else None
+        if img is not None and (img.ndim != 3 or img.shape[2] != 3):
+            QMessageBox.critical(self, self.tr("Error"), self.tr("Active document must be RGB (3 channels)."))
+            return False
+        return True
+
+    def calibrate(self):
+        """Calibrate: find and look up the stars, measure them, correct the
+        colour and show every chart. Was Step 1 + Step 2."""
+        if getattr(self, "_running", False) or not self._check_chain():
+            return
+        if not self._ensure_plate_solution():
+            return
+        t0 = time.perf_counter()
+        self._one_click = True
+        self._last_result = None
+        self._set_running(True)
+        ok = False
+        try:
+            self.star_list = []
+            self.fetch_stars()
+            if self.star_list:
+                ok = bool(self.run_spcc())
+        finally:
+            self._one_click = False
+            self._set_running(False)
+        if ok:
+            self._show_results(time.perf_counter() - t0)
+            self._run_state.mark_done(self.doc_manager.get_active_document())
+
+    def _show_results(self, seconds: float):
+        r = self._last_result or {}
+        self.summary_label.setText(self.tr(
+            "<b>Calibrated</b> with {0} stars ({1} Gaia XP spectra, {2} Pickles templates) "
+            "in {3:.1f} s.<br>Model: {4} · R ratio @ x=1: {5:.4f} · B ratio @ x=1: {6:.4f}"
+        ).format(r.get("n_stars", 0), r.get("n_xp", 0), r.get("n_pickles", 0), seconds,
+                 r.get("model", "?"), r.get("r_ratio", float("nan")), r.get("b_ratio", float("nan"))))
+        first = not self.results_panel.isVisible()
+        self.results_panel.setVisible(True)
+        if first:
+            _grow_to_fit(self, results_w=860, min_h=780)
+        _force_mpl_no_tex()
+        self.canvas.draw_idle()
+
+    def _build_steps_ui(self):
+        """The two-step layout (Step 1 fetch, Step 2 calibrate). NBExtract
+        builds on it; SFCC itself uses _build_ui."""
         layout = QVBoxLayout(self)
 
         row1 = QHBoxLayout(); layout.addLayout(row1)
@@ -1414,11 +2225,6 @@ class SFCCDialog(QDialog):
             "(paste data, import a CSV, digitize a chart image, or generate a bandpass)."))
         self.curve_mgr_btn.clicked.connect(self.open_curve_manager); row4.addWidget(self.curve_mgr_btn)
         row4.addStretch()
-        self.btn_help = make_help_button("sfcc", self)
-        from setiastro.saspro.shortcuts import ShortcutGrip
-        self.shortcut_grip = ShortcutGrip("sfcc", self)
-        row4.addWidget(self.shortcut_grip)
-        row4.addWidget(self.btn_help)
         self.factory_reset_btn = make_reset_button(self)
         self.factory_reset_btn.clicked.connect(self._reset_to_factory)
         row4.addWidget(self.factory_reset_btn)
@@ -1428,6 +2234,17 @@ class SFCCDialog(QDialog):
 
         self.figure = Figure(figsize=(6, 4)); self.canvas = FigureCanvas(self.figure); self.canvas.setVisible(False); layout.addWidget(self.canvas, stretch=1)
         self.reset_btn = QPushButton(self.tr("Reset View/Close")); self.reset_btn.clicked.connect(self.reject); layout.addWidget(self.reset_btn)
+
+        # Grip + help: their own row at the bottom (NBExtract hides both by name)
+        from setiastro.saspro.shortcuts import ShortcutGrip
+        self.shortcut_grip = ShortcutGrip("sfcc", self)
+        self.btn_help = make_help_button("sfcc", self)
+        grip_row = QHBoxLayout()
+        grip_row.setContentsMargins(0, 0, 0, 0)
+        grip_row.addWidget(self.shortcut_grip)
+        grip_row.addStretch(1)
+        grip_row.addWidget(self.btn_help)
+        layout.addLayout(grip_row)
         self.color_matrix_chk.toggled.connect(
             lambda v: QSettings().setValue("SFCC/UseColorMatrix", bool(v))
         )
@@ -1536,45 +2353,26 @@ class SFCCDialog(QDialog):
         exactly as they handled an empty result before.
         """
         if self._auto_sigma_enabled():
-            last_sources = None
-            last_sigma   = None
-            for sig in self.SFCC_AUTO_SIGMA_LADDER:
-                if status_prefix:
-                    _sfcc_status(self, f"{status_prefix} (trying σ={sig:.1f})…")
-                    QApplication.processEvents()
-                try:
-                    srcs = sep.extract(data_sub, float(sig), err=err)
-                except Exception:
-                    # Treat as "no detections at this σ" and keep stepping down
-                    srcs = None
-                last_sources = srcs
-                last_sigma   = sig
-                n = 0 if srcs is None else int(srcs.size)
-                if n >= self.SFCC_AUTO_SIGMA_MIN_STARS:
-                    if status_prefix:
-                        _sfcc_status(
-                            self,
-                            f"{status_prefix} — auto σ={sig:.1f} → {n:,} sources."
-                        )
-                        QApplication.processEvents()
-                    return srcs, float(sig)
-            # Ladder exhausted — return the last (lowest-σ, most sensitive) try
-            n = 0 if last_sources is None else int(last_sources.size)
+            # Same σ as stepping down the whole ladder, in 2-3 passes.
+            sources, sig = sep_detect_auto_sigma(
+                data_sub, err, self.SFCC_AUTO_SIGMA_LADDER, self.SFCC_AUTO_SIGMA_MIN_STARS,
+                status_cb=(lambda m: _sfcc_status(self, f"{status_prefix} ({m})…"))
+                if status_prefix else None)
+            n = 0 if sources is None else int(sources.size)
             if status_prefix:
-                _sfcc_status(
-                    self,
-                    f"{status_prefix} — auto σ ladder exhausted, using σ="
-                    f"{(last_sigma or 3.0):.1f} ({n:,} sources)."
-                )
-                QApplication.processEvents()
-            return (last_sources if last_sources is not None
-                    else sep.extract(data_sub, 3.0, err=err)), float(last_sigma or 3.0)
+                if n >= self.SFCC_AUTO_SIGMA_MIN_STARS:
+                    _sfcc_status(self, f"{status_prefix} — auto σ={sig:.1f} → {n:,} sources.")
+                else:
+                    _sfcc_status(self, f"{status_prefix} — auto σ ladder exhausted, "
+                                       f"using σ={sig:.1f} ({n:,} sources).")
+            return sources, float(sig)
 
         # Manual mode — single shot at the spin value
         sep_sigma = float(self.sep_thr_spin.value()) if hasattr(self, "sep_thr_spin") else 5.0
         if status_prefix:
             _sfcc_status(self, f"{status_prefix} (manual σ={sep_sigma:.1f})…")
             QApplication.processEvents()
+        _seed_sep_rng()          # same stars every run (see sfcc._seed_sep_rng)
         return sep.extract(data_sub, sep_sigma, err=err), sep_sigma
 
     def save_lp_setting(self, _):  QSettings().setValue("SFCC/LPFilter", self.lp_filter_combo.currentText())
@@ -2489,6 +3287,21 @@ class SFCCDialog(QDialog):
 
         wcs2 = self.wcs.celestial if hasattr(self.wcs, "celestial") else self.wcs
         H, W = self.current_image.shape[:2]
+        self._det_sources = None           # set below once this image's stars are found
+        self._det_image = None
+
+        # ── The field on the sky, for the SIMBAD region query ─────────────
+        pix_corners = np.array([[W/2, H/2], [0,0], [W,0], [0,H], [W,H]], dtype=float)
+        try:
+            sky_corners = wcs2.all_pix2world(pix_corners, 0)
+        except Exception as e:
+            QMessageBox.critical(self, self.tr("WCS Error"), str(e))
+            return
+        center_sky  = SkyCoord(ra=float(sky_corners[0,0])*u.deg,
+                               dec=float(sky_corners[0,1])*u.deg, frame="icrs")
+        corners_sky = SkyCoord(ra=sky_corners[1:,0]*u.deg,
+                               dec=sky_corners[1:,1]*u.deg, frame="icrs")
+        radius = center_sky.separation(corners_sky).max() * 1.05
 
         # ── Step 1: SEP detection ──────────────────────────────────────────
         _sfcc_status(self, "Detecting stars with SEP…")
@@ -2500,7 +3313,7 @@ class SFCCDialog(QDialog):
             img_float = self.current_image.astype(np.float32, copy=False)
 
         base  = self._make_working_base_for_sep(img_float)
-        gray  = np.mean(base, axis=2).astype(np.float32)
+        gray  = _gray_for_sep(base)
         bkg   = sep.Background(gray)
         data_sub = gray - bkg.back()
         err   = float(bkg.globalrms)
@@ -2508,6 +3321,7 @@ class SFCCDialog(QDialog):
         sources, sep_sigma = self._sep_detect_waterfall(
             data_sub, err, status_prefix="Detecting stars with SEP"
         )
+        del base, data_sub
 
         if sources is None or sources.size == 0:
             QMessageBox.critical(self, self.tr("SEP Error"), self.tr("SEP found no sources."))
@@ -2518,11 +3332,18 @@ class SFCCDialog(QDialog):
             2.0 * sources["a"], 0.5,
             normflux=sources["flux"], subpix=5
         )
+        del gray
         mask = (r_fluxrad > 0.2) & (r_fluxrad <= 10)
         sources = sources[mask]
         if sources.size == 0:
             QMessageBox.critical(self, self.tr("SEP Error"), self.tr("All SEP detections rejected by radius filter."))
             return
+
+        # SIMBAD starts now, after detection, not during it: sep.extract holds
+        # the GIL for seconds, which stalled an earlier overlapping query until
+        # its mirror probe timed out (2026-11-28). The wait for it below keeps
+        # the window painting, and the Gaia matching meanwhile overlaps it.
+        simbad_job = _SimbadPrefetch(center_sky, radius, with_ids=True)
 
         _sfcc_status(self, f"SEP detected {sources.size:,} stars (σ={sep_sigma:.1f}) — converting to sky coords…")
         QApplication.processEvents()
@@ -2584,7 +3405,7 @@ class SFCCDialog(QDialog):
         if _ps == "resolved":                  # re-solved: Step 1 again on the new WCS
             return SFCCDialog.fetch_stars(self)
         if _ps == "stop":
-            _sfcc_status(self, "Step 1 stopped: the plate solution looks wrong.")
+            _sfcc_status(self, "Stopped: the plate solution looks wrong.")
             return
 
         # ── Step 4: Build star_list from SEP + Gaia matches ───────────────
@@ -2621,46 +3442,24 @@ class SFCCDialog(QDialog):
                 "gaia_sep_arcsec": batch_results.get(i, (None, None))[1] if i in gaia_source_map else None,
                 "sp_source":      "gaia_xp" if sid is not None else None,
             })
+        # The detections, aligned with star_list, so the calibration measures
+        # these same stars instead of detecting them all over again.
+        self._det_sources = sources
+        self._det_image = self.current_image
+        self._det_sigma = float(sep_sigma)
 
-        # ── Step 5: SIMBAD region query for spectral types ─────────────────
-        pix_corners = np.array([[W/2, H/2], [0,0], [W,0], [0,H], [W,H]], dtype=float)
-        try:
-            sky_corners = wcs2.all_pix2world(pix_corners, 0)
-        except Exception as e:
-            QMessageBox.critical(self, self.tr("WCS Error"), str(e))
-            return
-
-        center_sky  = SkyCoord(ra=float(sky_corners[0,0])*u.deg,
-                               dec=float(sky_corners[0,1])*u.deg, frame="icrs")
-        corners_sky = SkyCoord(ra=sky_corners[1:,0]*u.deg,
-                               dec=sky_corners[1:,1]*u.deg, frame="icrs")
-        radius = center_sky.separation(corners_sky).max() * 1.05
-
-        # Probe + mirror failover + bounded timeouts; see cds_health.
-        # Also routes the query off the GUI thread, which the old direct
-        # Simbad.query_region() call did not do.
-        self._simbad_budget = cds_health.Budget()
-        _simbad = cds_health.prepare_simbad(
-            status_cb=lambda m: _sfcc_status(self, m), timeout=30.0)
-
-        simbad_result = None
-        if _simbad is not None:
-            _sfcc_status(self, "Querying SIMBAD for spectral types…")
-            QApplication.processEvents()
-            simbad_result = cds_health.call_simbad(
-                _simbad.query_region, center_sky,
-                radius=radius,
-                runner=lambda f, *a, **k: run_async_blocking(
-                    f, *a, parent=self, title="SFCC",
-                    label=self.tr("Querying SIMBAD…"), cancellable=False, **k),
-                status_cb=lambda m: _sfcc_status(self, m),
-                budget=self._simbad_budget,
-                attempts=2,
-                label="SIMBAD region query",
-            )
+        # ── Step 5: SIMBAD region query (started after detection) ──────────
+        # Probe, mirror failover and bounded timeouts: see cds_health.
+        if not simbad_job.done():
+            _sfcc_status(self, "Waiting for SIMBAD spectral types…")
+        simbad_result = simbad_job.wait()
+        for m in simbad_job.messages:
+            _sfcc_status(self, m)
 
         # ── Step 6: Cross-match SIMBAD results onto star_list by position ──
         templates_for_hist = []
+        simbad_ids_in_region = False           # the query carried SIMBAD's "ids"
+        simbad_gaia_ids: dict[int, Optional[int]] = {}   # star index -> Gaia DR3 id
 
         if simbad_result is not None and len(simbad_result) > 0:
             cols_lower = {c.lower(): c for c in simbad_result.colnames}
@@ -2672,6 +3471,9 @@ class SFCCDialog(QDialog):
             v_col   = cols_lower.get("v") or cols_lower.get("flux_v")
             r_col   = cols_lower.get("r") or cols_lower.get("flux_r")
             main_id_col = cols_lower.get("main_id")
+            ids_col = cols_lower.get("ids")
+            if ids_col is not None:
+                simbad_ids_in_region = True
 
             def _unmask_num(x):
                 try:
@@ -2741,6 +3543,8 @@ class SFCCDialog(QDialog):
                 best_template = match_list[0] if match_list else None
 
                 st["main_id"]       = str(row[main_id_col]).strip() if main_id_col and row[main_id_col] else None
+                if ids_col is not None:
+                    simbad_gaia_ids[j] = _simbad_gaia_dr3_id(row[ids_col])
                 st["sp_clean"]      = sp_clean
                 st["sp_source"]     = sp_source if st["sp_source"] != "gaia_xp" else "gaia_xp"
                 st["pickles_match"] = best_template
@@ -2771,7 +3575,16 @@ class SFCCDialog(QDialog):
                 try:
                     from setiastro.saspro.gaia_database import get_library
                     lib = get_library()
-                    if lib.installed_bands():
+                    if lib.installed_bands() and simbad_ids_in_region:
+                        # The region query already carried every object's ids:
+                        # no second round trip.
+                        simbad_to_gaia: dict[str, int] = {}
+                        for j, gid in simbad_gaia_ids.items():
+                            mid = self.star_list[j].get("main_id")
+                            if gid is not None and mid:
+                                simbad_to_gaia[mid] = int(gid)
+                        main_ids = []
+                    elif lib.installed_bands():
                         _sfcc_status(self,
                             f"SIMBAD ids lookup for {len(needs_simbad_ids)} unmatched stars…")
                         QApplication.processEvents()
@@ -2785,9 +3598,10 @@ class SFCCDialog(QDialog):
                         main_ids = ([st["main_id"] for st in needs_simbad_ids]
                                     if s_obj is not None and cds_health.simbad_available()
                                     else [])
+                        simbad_to_gaia = {}
+                    if lib.installed_bands():
                         BATCH = 200
                         _ids_budget = cds_health.Budget(30.0)
-                        simbad_to_gaia: dict[str, int] = {}
                         for i in range(0, len(main_ids), BATCH):
                             if _ids_budget.expired() or not cds_health.simbad_available():
                                 _sfcc_status(self,
@@ -2900,69 +3714,24 @@ class SFCCDialog(QDialog):
         # self.star_list lives on the dialog instance and is all we need.
 
         # ── Summary plot ──────────────────────────────────────────────────
-        if getattr(self, "figure", None) is not None:
-            self.figure.clf()
-
-        if getattr(self, "figure", None) is not None and getattr(self, "canvas", None) is not None:
+        # One-click runs draw these two charts with the calibration's plots at
+        # the end of the run; the two-step layout (NBExtract) draws them now.
+        self._templates_for_hist = list(templates_for_hist)
+        n_gaia_xp, n_simbad_pickles, n_bv_pickles, n_none = _star_source_counts(self.star_list)
+        if (not getattr(self, "_one_click", False)
+                and getattr(self, "figure", None) is not None
+                and getattr(self, "canvas", None) is not None):
             fig = self.figure
-            
-            # Left: spectral type distribution (Pickles + B-V inferred)
-            ax1 = fig.add_subplot(1, 2, 1)
-            if templates_for_hist:
-                uniq, cnt = np.unique(templates_for_hist, return_counts=True)
-                ax1.bar(uniq, cnt, edgecolor="black", color="#5588cc", label="Pickles")
-            # overlay B-V inferred
-            bv_types = [s["sp_clean"] for s in self.star_list
-                        if s.get("sp_source") == "bv_inferred" and s.get("sp_clean")]
-            if bv_types:
-                bv_uniq, bv_cnt = np.unique(bv_types, return_counts=True)
-                ax1.bar(bv_uniq, bv_cnt, edgecolor="black", color="#cc8844",
-                        alpha=0.7, label="B-V inferred")
-            ax1.set_xlabel("Spectral Type")
-            ax1.set_ylabel("Count")
-            ax1.set_title("Spectral Type Distribution")
-            ax1.tick_params(axis="x", rotation=90)
-            ax1.grid(axis="y", linestyle="--", alpha=0.3)
-            ax1.legend(fontsize=8)
-
-            # Right: source breakdown pie — mutually exclusive buckets
-            ax2 = fig.add_subplot(1, 2, 2)
-
-            n_gaia_xp        = sum(1 for s in self.star_list
-                                   if s.get("gaia_source_id") is not None)
-            n_simbad_pickles = sum(1 for s in self.star_list
-                                   if s.get("gaia_source_id") is None
-                                   and s.get("sp_source") == "simbad"
-                                   and s.get("pickles_match") is not None)
-            n_bv_pickles     = sum(1 for s in self.star_list
-                                   if s.get("gaia_source_id") is None
-                                   and s.get("sp_source") == "bv_inferred")
-            n_none           = len(self.star_list) - n_gaia_xp - n_simbad_pickles - n_bv_pickles
-
-            labels, sizes, colors = [], [], []
-            for label, size, color in [
-                (f"Gaia XP ({n_gaia_xp})",               n_gaia_xp,        "#44cc88"),
-                (f"Pickles/SIMBAD ({n_simbad_pickles})",  n_simbad_pickles, "#5588cc"),
-                (f"Pickles/B-V ({n_bv_pickles})",         n_bv_pickles,     "#cc8844"),
-                (f"No spectrum ({n_none})",                n_none,           "#555555"),
-            ]:
-                if size > 0:
-                    labels.append(label)
-                    sizes.append(size)
-                    colors.append(color)
-
-            if sizes:
-                ax2.pie(sizes, labels=labels, colors=colors, autopct="%1.0f%%",
-                        textprops={"fontsize": 8})
-            ax2.set_title("Calibration Source Breakdown")
-
+            fig.clf()
+            _draw_star_summary(fig.add_subplot(1, 2, 1), fig.add_subplot(1, 2, 2),
+                               self.star_list, templates_for_hist)
             fig.tight_layout()
             self.canvas.setVisible(True)
             _force_mpl_no_tex()
             self.canvas.draw()
 
         _sfcc_status(self,
-            f"Step 1 complete — {len(self.star_list):,} stars detected  ·  "
+            f"Stars found — {len(self.star_list):,} stars detected  ·  "
             f"{n_gaia_xp:,} Gaia XP  ·  {n_simbad_pickles:,} Pickles/SIMBAD  ·  "
             f"{n_bv_pickles:,} Pickles/B-V  ·  {n_none:,} unclassified")
 
@@ -3149,59 +3918,75 @@ class SFCCDialog(QDialog):
         if self.neutralize_chk.isChecked():
             base = self._neutralize_background(base, remove_pedestal=False)
 
-        # ── SEP re-detection ──────────────────────────────────────────────
-        gray     = np.mean(base, axis=2).astype(np.float32)
-        bkg      = sep.Background(gray)
-        data_sub = gray - bkg.back()
-        err      = float(bkg.globalrms)
+        # ── Stars: the ones Step 1 found in this very image ───────────────
+        # Re-detecting them (the old Step 2) found the same sources again and
+        # cost a second σ waterfall. Only an image that changed since Step 1
+        # is detected again.
+        det = getattr(self, "_det_sources", None)
+        if (det is not None and getattr(self, "_det_image", None) is img
+                and len(det) == len(self.star_list)):
+            sources = det
+            _sfcc_status(self, f"Measuring the {sources.size:,} stars found in this image…")
+            pairs = range(len(self.star_list))       # star i is source i
+        else:
+            gray     = _gray_for_sep(base)
+            bkg      = sep.Background(gray)
+            data_sub = gray - bkg.back()
+            err      = float(bkg.globalrms)
 
-        sources, sep_sigma = self._sep_detect_waterfall(
-            data_sub, err, status_prefix="Re-detecting stars for photometry"
-        )
+            sources, sep_sigma = self._sep_detect_waterfall(
+                data_sub, err, status_prefix="Re-detecting stars for photometry"
+            )
 
-        if sources is not None and sources.size > 300_000:
-            QMessageBox.warning(self, self.tr("Too many detections"),
-                self.tr("SEP found {0:,} sources with σ={1:.1f}.\n"
-                        "Increase the threshold and rerun.").format(sources.size, sep_sigma))
-            return
-        if sources is None or sources.size == 0:
-            QMessageBox.critical(self, self.tr("SEP Error"), self.tr("SEP found no sources."))
-            return
+            if sources is not None and sources.size > 300_000:
+                QMessageBox.warning(self, self.tr("Too many detections"),
+                    self.tr("SEP found {0:,} sources with σ={1:.1f}.\n"
+                            "Increase the threshold and rerun.").format(sources.size, sep_sigma))
+                return
+            if sources is None or sources.size == 0:
+                QMessageBox.critical(self, self.tr("SEP Error"), self.tr("SEP found no sources."))
+                return
 
-        _sfcc_status(self, f"SEP found {sources.size:,} sources (σ={sep_sigma:.1f}) — applying radius filter…")
-        QApplication.processEvents()
+            _sfcc_status(self, f"SEP found {sources.size:,} sources (σ={sep_sigma:.1f}) — applying radius filter…")
+            QApplication.processEvents()
 
-        r_fluxrad, _ = sep.flux_radius(
-            gray, sources["x"], sources["y"],
-            2.0 * sources["a"], 0.5,
-            normflux=sources["flux"], subpix=5)
-        mask = (r_fluxrad > 0.2) & (r_fluxrad <= 10)
-        sources = sources[mask]
-        if sources.size == 0:
-            QMessageBox.critical(self, self.tr("SEP Error"), self.tr("All SEP detections rejected by radius filter."))
-            return
+            r_fluxrad, _ = sep.flux_radius(
+                gray, sources["x"], sources["y"],
+                2.0 * sources["a"], 0.5,
+                normflux=sources["flux"], subpix=5)
+            mask = (r_fluxrad > 0.2) & (r_fluxrad <= 10)
+            sources = sources[mask]
+            del gray, data_sub
+            if sources.size == 0:
+                QMessageBox.critical(self, self.tr("SEP Error"), self.tr("All SEP detections rejected by radius filter."))
+                return
 
-        # ── Match star_list → current SEP sources ─────────────────────────
-        _sfcc_status(self, f"Matching {sources.size:,} SEP sources to star catalog…")
-        QApplication.processEvents()
+            # ── Match star_list → current SEP sources ─────────────────────
+            _sfcc_status(self, f"Matching {sources.size:,} SEP sources to star catalog…")
+            QApplication.processEvents()
+            pairs = None
 
         raw_matches = []
         for i, star in enumerate(self.star_list):
-            dx = sources["x"] - star["x"]
-            dy = sources["y"] - star["y"]
-            j  = int(np.argmin(dx * dx + dy * dy))
-            if (dx[j]**2 + dy[j]**2) < (3.0**2):
-                raw_matches.append({
-                    "sim_index": i,
-                    "template":  star.get("pickles_match") or star.get("sp_clean") or "",
-                    "src_index": j,
-                    "x":         float(sources["x"][j]),
-                    "y":         float(sources["y"][j]),
-                    "x_pix":     float(sources["x"][j]),
-                    "y_pix":     float(sources["y"][j]),
-                    "a":         float(sources["a"][j]),
-                    "sep_flux":  float(sources["flux"][j]),
-                })
+            if pairs is not None:
+                j = i
+            else:
+                dx = sources["x"] - star["x"]
+                dy = sources["y"] - star["y"]
+                j  = int(np.argmin(dx * dx + dy * dy))
+                if (dx[j]**2 + dy[j]**2) >= (3.0**2):
+                    continue
+            raw_matches.append({
+                "sim_index": i,
+                "template":  star.get("pickles_match") or star.get("sp_clean") or "",
+                "src_index": j,
+                "x":         float(sources["x"][j]),
+                "y":         float(sources["y"][j]),
+                "x_pix":     float(sources["x"][j]),
+                "y_pix":     float(sources["y"][j]),
+                "a":         float(sources["a"][j]),
+                "sep_flux":  float(sources["flux"][j]),
+            })
 
         if not raw_matches:
             QMessageBox.warning(self, self.tr("No Matches"),
@@ -3225,25 +4010,23 @@ class SFCCDialog(QDialog):
         wl_min, wl_max = 3000, 11000
         wl_grid = np.arange(wl_min, wl_max + 1)
 
+        # Every curve in one read of each file (user curves first, as before).
+        curve_paths = (self.user_custom_path, self.sasp_data_path)
+        curves = _read_sasp_tables(
+            curve_paths, (r_filt, g_filt, b_filt, sens_name, lp_filt, lp_filt2), "THROUGHPUT")
+        seds = _read_sasp_tables(curve_paths, (ref_sed_name,), "FLUX")
+
         def load_curve(ext):
-            for p in (self.user_custom_path, self.sasp_data_path):
-                with fits.open(p, memmap=False) as hd:
-                    if ext in hd:
-                        d  = hd[ext].data
-                        wl = _ensure_angstrom(d["WAVELENGTH"].astype(float))
-                        tp = d["THROUGHPUT"].astype(float)
-                        return wl, tp
-            raise KeyError(f"Curve '{ext}' not found")
+            if ext not in curves:
+                raise KeyError(f"Curve '{ext}' not found")
+            return curves[ext]
 
         def load_sed(ext):
-            for p in (self.user_custom_path, self.sasp_data_path):
-                with fits.open(p, memmap=False) as hd:
-                    if ext in hd:
-                        d  = hd[ext].data
-                        wl = _ensure_angstrom(d["WAVELENGTH"].astype(float))
-                        fl = d["FLUX"].astype(float)
-                        return wl, fl
-            raise KeyError(f"SED '{ext}' not found")
+            if ext not in seds:
+                seds.update(_read_sasp_tables(curve_paths, (ext,), "FLUX"))
+            if ext not in seds:
+                raise KeyError(f"SED '{ext}' not found")
+            return seds[ext]
 
         interp_tp = lambda wl_o, tp_o: np.interp(wl_grid, wl_o, tp_o, left=0.0, right=0.0)
 
@@ -3255,9 +4038,13 @@ class SFCCDialog(QDialog):
         LP2 = interp_tp(*load_curve(lp_filt2))  if lp_filt2 != "(None)" else np.ones_like(wl_grid)
         LP  = LP1 * LP2
 
-        T_sys_R = T_R * QE * LP
-        T_sys_G = T_G * QE * LP
-        T_sys_B = T_B * QE * LP
+        # Photon-counting: a sensor counts photons, and a photon's energy is
+        # hc/λ, so the counts a spectrum F_λ gives through T are ∫F_λ·λ·T dλ.
+        # λ/5500 Å keeps the numbers near 1; constants cancel in every ratio.
+        PW = wl_grid.astype(np.float64) / 5500.0
+        T_sys_R = T_R * QE * LP * PW
+        T_sys_G = T_G * QE * LP * PW
+        T_sys_B = T_B * QE * LP * PW
 
         wl_ref, fl_ref = load_sed(ref_sed_name)
         fr_i    = np.interp(wl_grid, wl_ref, fl_ref, left=0.0, right=0.0)
@@ -3316,6 +4103,7 @@ class SFCCDialog(QDialog):
                 types_needing_pickles.add(pname)
 
         template_integrals: dict[str, tuple[float, float, float]] = {}
+        seds.update(_read_sasp_tables(curve_paths, sorted(types_needing_pickles), "FLUX"))
         for pname in types_needing_pickles:
             try:
                 wl_s, fl_s = load_sed(pname)
@@ -3330,15 +4118,27 @@ class SFCCDialog(QDialog):
 
         # ── Filter to only stars with a spectrum before photometry ────────
         # No point measuring aperture photometry on stars we can't calibrate.
+        def _has_xp(m):
+            st = self.star_list[int(m["sim_index"])]
+            return (st.get("gaia_source_id") is not None
+                    and int(st["gaia_source_id"]) in gaia_integrals)
+
         raw_matches_with_spectrum = [
             m for m in raw_matches
-            if (
-                self.star_list[int(m["sim_index"])].get("gaia_source_id") is not None
-                and int(self.star_list[int(m["sim_index"])]["gaia_source_id"]) in gaia_integrals
-            ) or (
-                simbad_to_pickles.get(m["template"]) is not None
-            )
+            if _has_xp(m) or simbad_to_pickles.get(m["template"]) is not None
         ]
+        # Gaia XP spectra are observed spectra, dust included; a Pickles
+        # template picked from a SIMBAD type is dust-free and predicts a
+        # reddened star too blue (ngc1333: measured / expected R/G IQR
+        # 1.21-1.79 against 1.02-1.05 for XP). Templates only fill in when
+        # there are too few XP stars to fit on.
+        n_xp_only = sum(1 for m in raw_matches_with_spectrum if _has_xp(m))
+        if n_xp_only >= SFCC_MIN_XP_ONLY:
+            n_dropped = len(raw_matches_with_spectrum) - n_xp_only
+            raw_matches_with_spectrum = [m for m in raw_matches_with_spectrum if _has_xp(m)]
+            if n_dropped:
+                _sfcc_status(self, f"{n_xp_only} Gaia XP stars: calibrating on XP spectra only "
+                                   f"({n_dropped} Pickles-template stars left out).")
 
         n_total_matches = len(raw_matches_with_spectrum)
 
@@ -3355,11 +4155,8 @@ class SFCCDialog(QDialog):
                 "SIMBAD returned spectral types for this field."))
             return
 
-        # ── Step C: Parallel aperture photometry ──────────────────────────
-        import concurrent.futures
-        import os
-
-        _sfcc_status(self, f"Measuring stellar flux for {n_total_matches} stars (parallel)…")
+        # ── Step C: Aperture photometry (all stars in one pass) ───────────
+        _sfcc_status(self, f"Measuring stellar flux for {n_total_matches} stars…")
         QApplication.processEvents()
 
         diag_meas_RG, diag_exp_RG = [], []
@@ -3368,16 +4165,24 @@ class SFCCDialog(QDialog):
 
         base_ro = np.ascontiguousarray(base, dtype=np.float32)
 
-        def _measure_one(m):
-            si  = int(m["sim_index"])
-            x   = float(m["x"])
-            y   = float(m["y"])
-            a   = float(m.get("a", 1.5))
-            r   = float(np.clip(2.5 * a, 2.0, 12.0))
+        def _apertures(m):
+            a    = float(m.get("a", 1.5))
+            r    = float(np.clip(2.5 * a, 2.0, 12.0))
             rin  = float(np.clip(3.0 * r,       6.0,       40.0))
             rout = float(np.clip(5.0 * r, rin + 2.0,       60.0))
+            return r, rin, rout
 
-            phot = measure_star_rgb_photometry(base_ro, x, y, r, rin, rout)
+        apertures = [_apertures(m) for m in raw_matches_with_spectrum]
+        phots = measure_stars_rgb_photometry(
+            base_ro,
+            [float(m["x"]) for m in raw_matches_with_spectrum],
+            [float(m["y"]) for m in raw_matches_with_spectrum],
+            [ap[0] for ap in apertures], [ap[1] for ap in apertures],
+            [ap[2] for ap in apertures])
+
+        def _measure_one(m, ap, phot):
+            si  = int(m["sim_index"])
+            r, rin, rout = ap
             if phot is None:
                 return None
 
@@ -3448,31 +4253,19 @@ class SFCCDialog(QDialog):
                 "used_gaia": sid is not None and int(sid) in gaia_integrals,
             }
 
-        n_workers = min(8, max(1, os.cpu_count() or 4))
-        done_count = 0
-
-        with concurrent.futures.ThreadPoolExecutor(max_workers=n_workers) as pool:
-            futures = {pool.submit(_measure_one, m): m for m in raw_matches_with_spectrum}
-            for fut in concurrent.futures.as_completed(futures):
-                done_count += 1
-                if done_count % 25 == 0 or done_count == n_total_matches:
-                    _sfcc_status(self,
-                        f"Measuring stellar flux — "
-                        f"{done_count}/{n_total_matches} stars  ·  "
-                        f"{len(enriched)} valid so far…")
-                    QApplication.processEvents()
-                try:
-                    result = fut.result()
-                except Exception as e:
-                    print(f"[SPCC] Photometry worker failed: {e}")
-                    continue
-                if result is None:
-                    continue
-                enriched.append(result)
-                diag_meas_RG.append(result["meas_RG"])
-                diag_exp_RG.append(result["exp_RG"])
-                diag_meas_BG.append(result["meas_BG"])
-                diag_exp_BG.append(result["exp_BG"])
+        for m, ap, phot in zip(raw_matches_with_spectrum, apertures, phots):
+            try:
+                result = _measure_one(m, ap, phot)
+            except Exception as e:
+                print(f"[SPCC] Photometry failed for a star: {e}")
+                continue
+            if result is None:
+                continue
+            enriched.append(result)
+            diag_meas_RG.append(result["meas_RG"])
+            diag_exp_RG.append(result["exp_RG"])
+            diag_meas_BG.append(result["meas_BG"])
+            diag_exp_BG.append(result["exp_BG"])
 
         _sfcc_status(self,
             f"Photometry complete — {len(enriched)} valid of {n_total_matches} stars measured")
@@ -3570,7 +4363,11 @@ class SFCCDialog(QDialog):
             q1, q3 = np.percentile(yvals, [25, 75])
             ax.axhspan(q1, q3, color=color, alpha=0.10, zorder=0)
 
-        ax2 = self.figure.add_subplot(1, 2, 1)
+        # One-click runs show every chart at the end: residuals on top, the
+        # star charts (drawn after Step 1 in the two-step layout) below.
+        one_click = bool(getattr(self, "_one_click", False))
+        rows = 2 if one_click else 1
+        ax2 = self.figure.add_subplot(rows, 2, 1)
         ax2.axhline(0, color="0.65", ls="--", lw=1)
         shade(ax2, res0_RG, "firebrick"); shade(ax2, res0_BG, "royalblue")
         ax2.scatter(diag_exp_RG, res0_RG, c="firebrick", marker="o", alpha=0.7, label="R/G residual")
@@ -3581,7 +4378,7 @@ class SFCCDialog(QDialog):
         ax2.set_title("Residuals • BEFORE")
         ax2.legend(frameon=False, fontsize=7, loc="lower right")
 
-        ax3 = self.figure.add_subplot(1, 2, 2)
+        ax3 = self.figure.add_subplot(rows, 2, 2)
         ax3.axhline(0, color="0.65", ls="--", lw=1)
         shade(ax3, res1_RG, "firebrick"); shade(ax3, res1_BG, "royalblue")
         ax3.scatter(diag_exp_RG, res1_RG, c="firebrick", marker="o", alpha=0.7)
@@ -3591,30 +4388,57 @@ class SFCCDialog(QDialog):
         ax3.set_ylabel("Frac residual (corrected/exp − 1)")
         ax3.set_title("Residuals • AFTER")
 
-        self.canvas.setVisible(True)
-        self.figure.tight_layout(w_pad=2.0)
-        self.canvas.draw()
+        if one_click:
+            _draw_star_summary(self.figure.add_subplot(2, 2, 3), self.figure.add_subplot(2, 2, 4),
+                               self.star_list, getattr(self, "_templates_for_hist", []))
+            # The results panel may still be hidden or about to grow: lay the
+            # charts out again on every draw instead of once now.
+            _relayout_on_draw(self.figure)
+        else:
+            self.canvas.setVisible(True)
+            self.figure.tight_layout(w_pad=2.0)
+            self.canvas.draw()
 
         # ── Step F: Apply per-channel correction ──────────────────────────
         _sfcc_status(self, "Applying SFCC color scales to image…")
         QApplication.processEvents()
 
+        # The fit p maps a measured band/G ratio to the star's EXPECTED ratio
+        # through the system. Expected ratios are not colours (a G2V star
+        # through Antlia R/G/B x IMX492 expects R/G 0.76, B/G 1.04), so the
+        # corrected ratio is p(ratio) relative to the white reference's
+        # expected ratio, and the pixel gain is p(ratio) / (ratio * ref).
+        # Before 2026-11-28 the gain was p(ratio) itself and the reference
+        # was never used: the output was 13-17% off on ngc1333, with a
+        # colour-dependent stretch, and the White Reference choice did nothing.
+        ref_RG = float(S_ref_R / S_ref_G) if S_ref_G > 0 else 1.0
+        ref_BG = float(S_ref_B / S_ref_G) if S_ref_G > 0 else 1.0
+        if not (np.isfinite(ref_RG) and ref_RG > 0 and np.isfinite(ref_BG) and ref_BG > 0):
+            ref_RG = ref_BG = 1.0
+        print(f"[SPCC] White reference {ref_sed_name}: expected R/G {ref_RG:.4f}, B/G {ref_BG:.4f}")
+
         calibrated = img_float.copy()
-        R = calibrated[..., 0]
         G = calibrated[..., 1]
-        B = calibrated[..., 2]
         eps = 1e-8
+        G_safe = np.maximum(G, eps)
 
-        RG = R / np.maximum(G, eps)
-        BG = B / np.maximum(G, eps)
+        def _scaled(c, coeff, ref):
+            # gain(band/G) around the channel median; R and B are independent,
+            # and numpy releases the GIL, so they run side by side.
+            X = calibrated[..., c]
+            ratio = X / G_safe
+            a, b, cc = coeff
+            m = np.clip(a * ratio**2 + b * ratio + cc, 0.25, 4.0)
+            return _pivot_scale_channel(X, m / np.maximum(ratio, eps) / ref, float(np.median(X)))
 
-        aR, bR, cR = coeff_R
-        aB, bB, cB = coeff_B
-        mR = np.clip(aR * RG**2 + bR * RG + cR, 0.25, 4.0)
-        mB = np.clip(aB * BG**2 + bB * BG + cB, 0.25, 4.0)
-
-        calibrated[..., 0] = _pivot_scale_channel(R, mR, float(np.median(R)))
-        calibrated[..., 2] = _pivot_scale_channel(B, mB, float(np.median(B)))
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            fut_R = pool.submit(_scaled, 0, coeff_R, ref_RG)
+            fut_B = pool.submit(_scaled, 2, coeff_B, ref_BG)
+            new_R, new_B = fut_R.result(), fut_B.result()
+        calibrated[..., 0] = new_R
+        calibrated[..., 2] = new_B
+        del new_R, new_B
         calibrated = np.clip(calibrated, 0.0, 1.0)
 
         # ── Step G: Optional 3×3 color matrix correction ─────────────────
@@ -3658,6 +4482,8 @@ class SFCCDialog(QDialog):
             "SFCC_num_gaia_xp":        int(n_used_xp),
             "SFCC_num_pickles":        int(n_used_pkl),
             "SFCC_num_enriched_stars": int(len(enriched)),
+            "SFCC_white_reference":    str(ref_sed_name),
+            "SFCC_white_ref_ratios":   [float(ref_RG), float(ref_BG)],
         })
 
         self.doc_manager.update_active_document(
@@ -3673,8 +4499,17 @@ class SFCCDialog(QDialog):
             + ("  ·  3×3 matrix ✓" if use_cm else ""))
         QApplication.processEvents()
 
-        def pretty(coeff):
-            return float(coeff[0] + coeff[1] + coeff[2])
+        def pretty(coeff, ref):
+            # the gain a pixel with band/G = 1 gets
+            return float(np.clip(coeff[0] + coeff[1] + coeff[2], 0.25, 4.0)) / ref
+
+        self._last_result = {
+            "n_stars": int(n_stars), "n_xp": int(n_used_xp), "n_pickles": int(n_used_pkl),
+            "model": model_choice, "r_ratio": pretty(coeff_R, ref_RG), "b_ratio": pretty(coeff_B, ref_BG),
+        }
+        self.current_image = out_img
+        if one_click:
+            return True      # calibrate() shows the summary beside the charts
 
         QMessageBox.information(self, self.tr("SFCC Complete"),
             self.tr("Applied SFCC using {0} stars\n"
@@ -3686,7 +4521,7 @@ class SFCCDialog(QDialog):
             "  B ratio @ x=1: {5:.4f}\n"
             "  Background neutralisation: "
             "{6}").format(n_stars, n_used_xp, n_used_pkl, model_choice,
-                          pretty(coeff_R), pretty(coeff_B),
+                          pretty(coeff_R, ref_RG), pretty(coeff_B, ref_BG),
                           'ON' if self.neutralize_chk.isChecked() else 'OFF'))
 
         self.current_image = out_img
@@ -4234,10 +5069,38 @@ class SFCCDialog(QDialog):
         self._cleanup()
 
     def closeEvent(self, event):
+        if getattr(self, "_running", False):
+            event.ignore()        # see reject(): a run is still using the dialog
+            return
         self._cleanup()
         self._disconnect_curve_library()
+        if getattr(self, "_run_state", None) is not None:
+            self._run_state.shutdown()
         event.accept()
         super().closeEvent(event)
+
+
+def _grow_to_fit(dlg, *, results_w: int, min_h: int) -> None:
+    """Size a dialog for the results panel that just appeared beside its
+    settings column (showing the panel already widened it to the minimum),
+    keeping it on its screen."""
+    try:
+        scr = dlg.screen().availableGeometry() if dlg.screen() is not None else None
+        side = dlg.settings_panel.width() if getattr(dlg, "settings_panel", None) else 360
+        w = max(dlg.width(), side + int(results_w) + 40)
+        h = max(dlg.height(), int(min_h))
+        if scr is not None:
+            w = min(w, scr.width() - 40)
+            h = min(h, scr.height() - 60)
+        dlg.resize(w, h)
+        if scr is not None:
+            g = dlg.frameGeometry()
+            dx = min(0, scr.right() - g.right())
+            dy = min(0, scr.bottom() - g.bottom())
+            if dx or dy:
+                dlg.move(max(scr.left(), g.left() + dx), max(scr.top(), g.top() + dy))
+    except Exception:
+        pass
 
 
 # ──────────────────────────────────────────────────────────────────────────────

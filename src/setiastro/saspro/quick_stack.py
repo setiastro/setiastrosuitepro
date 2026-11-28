@@ -235,9 +235,6 @@ class QuickStackDialog(QDialog):
             "Colour cameras are debayered (bilinear)."))
         blurb.setWordWrap(True)
         top.addWidget(blurb, 1)
-        from setiastro.saspro.shortcuts import ShortcutGrip
-        top.addWidget(ShortcutGrip("quick_stack", self), 0, Qt.AlignmentFlag.AlignTop)
-        top.addWidget(make_help_button("quick_stack", self), 0, Qt.AlignmentFlag.AlignTop)
         root.addLayout(top)
 
         row = QHBoxLayout()
@@ -371,6 +368,14 @@ class QuickStackDialog(QDialog):
         brow.addStretch(1)
         brow.addWidget(self.btn_close)
         root.addLayout(brow)
+        # Grip + help: their own row at the bottom
+        from setiastro.saspro.shortcuts import ShortcutGrip
+        grip_row = QHBoxLayout()
+        grip_row.setContentsMargins(0, 0, 0, 0)
+        grip_row.addWidget(ShortcutGrip("quick_stack", self))
+        grip_row.addStretch(1)
+        grip_row.addWidget(make_help_button("quick_stack", self))
+        root.addLayout(grip_row)
         self._set_busy(False)
 
     # -- frame list --------------------------------------------------------

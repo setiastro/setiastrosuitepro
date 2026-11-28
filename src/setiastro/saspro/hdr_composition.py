@@ -1131,7 +1131,6 @@ class HDRCompositionDialog(QDialog):
         self.btn_reset.clicked.connect(self._reset_to_factory)
         self.btn_close = buttons.addButton(self.tr("Close"), QDialogButtonBox.ButtonRole.RejectRole)
         self.btn_help = make_help_button("hdr_composition", self)
-        buttons.addButton(self.btn_help, QDialogButtonBox.ButtonRole.ActionRole)
         self.btn_close.clicked.connect(self.reject)
         self.btn_apply.clicked.connect(self._apply)
 
@@ -1151,8 +1150,12 @@ class HDRCompositionDialog(QDialog):
         except Exception:
             self.preset_drag_handle = None
         drag_row.addStretch(1)
-        drag_row.addWidget(buttons)
-        root.addLayout(drag_row)
+        drag_row.addWidget(self.btn_help)
+        btn_row = QHBoxLayout()
+        btn_row.addStretch(1)
+        btn_row.addWidget(buttons)
+        root.addLayout(btn_row)
+        root.addLayout(drag_row)        # grip + help: their own row at the bottom
 
         self.btn_add.clicked.connect(self._add_selected)
         self.btn_remove.clicked.connect(self._remove_selected)

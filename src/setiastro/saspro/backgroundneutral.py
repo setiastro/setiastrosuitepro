@@ -13,6 +13,7 @@ from PyQt6.QtWidgets import (
 from setiastro.saspro.imageops.stretch import stretch_color_image
 # Shared utilities
 from setiastro.saspro.widgets.image_utils import extract_mask_from_document as _active_mask_array_from_doc
+from setiastro.saspro.widgets.image_utils import run_row_blocks, rgb_mean_f32
 from setiastro.saspro.widgets.themed_buttons import themed_toolbtn
 
 
@@ -32,12 +33,27 @@ def _remove_channel_pedestal(img_rgb01: np.ndarray) -> np.ndarray:
     """
     out = img_rgb01.astype(np.float32, copy=True)
 
-    mins = np.nanmin(out.reshape(-1, 3), axis=0).astype(np.float32)  # (3,)
+    # Per-channel nanmin (np.nanmin is np.fmin.reduce for float arrays); a
+    # min of block minima is the same min. Then subtract + clip in place.
+    # Row blocks on threads, identical to the whole-array expressions.
+    parts = []
+
+    def _block_min(r0, r1):
+        parts.append(np.fmin.reduce(out[r0:r1].reshape(-1, 3), axis=0))
+
+    run_row_blocks(out.shape[0], _block_min)
+    mins = np.fmin.reduce(np.stack(parts), axis=0).astype(np.float32)  # (3,)
     # If a channel is all-NaN, nanmin returns NaN; guard it:
     mins = np.where(np.isfinite(mins), mins, 0.0).astype(np.float32)
+    m3 = mins.reshape(1, 1, 3)
 
-    out -= mins.reshape(1, 1, 3)
-    return np.clip(out, 0.0, 1.0).astype(np.float32, copy=False)
+    def _sub_clip(r0, r1):
+        blk = out[r0:r1]
+        blk -= m3
+        np.clip(blk, 0.0, 1.0, out=blk)
+
+    run_row_blocks(out.shape[0], _sub_clip)
+    return out
 
 
 def background_neutralize_rgb(
@@ -90,54 +106,59 @@ def background_neutralize_rgb(
     g = (1.0 - t) / denom                    # (3,)
     g = np.clip(g, 0.0, 10.0)                # sanity cap
 
-    out = 1.0 - (1.0 - out) * g.reshape(1, 1, 3)
-    return np.clip(out, 0.0, 1.0).astype(np.float32, copy=False)
+    g3 = g.reshape(1, 1, 3)
+
+    # out = clip(1 - (1 - out) * g, 0, 1): in place, row blocks on threads
+    def _pivot(r0, r1):
+        blk = out[r0:r1]
+        np.subtract(1.0, blk, out=blk)
+        blk *= g3
+        np.subtract(1.0, blk, out=blk)
+        np.clip(blk, 0.0, 1.0, out=blk)
+
+    run_row_blocks(out.shape[0], _pivot)
+    return out
 
 
 
 # ------------------------------------
 # Auto background finder (SASv2 logic)
 # ------------------------------------
+# Seed for the random downhill starts in _find_best_patch_center. The search
+# used the global numpy RNG, so one image could get a different background box
+# on every call (six calls on a 30 MP master gave six boxes whose medians
+# differed by up to 16%), and a White Balance preview and its Apply disagreed.
+# A private RandomState keeps the same multi-start search, makes it
+# repeatable, and stops it consuming the process-wide RNG (and makes it safe
+# to call from several threads at once).
+_PATCH_SEARCH_SEED = 0
+
+
 def _find_best_patch_center(lum: np.ndarray) -> tuple[int, int]:
     """Port of your downhill-walk tile search (works on a luminance plane)."""
     h, w = lum.shape
     th, tw = h // 10, w // 10
-    
-    # Optimized: compute 10x10 tile medians using strided views where possible
-    # This avoids repeated slicing and is cache-friendlier
+
+    # 10x10 tile medians. Tile (i, j) spans rows [i*th, (i+1)*th) and columns
+    # [j*tw, (j+1)*tw); the last row and column of tiles run to the image edge.
+    # One exact median per tile, on threads (np.median's partition releases
+    # the GIL), instead of a transposed whole-image copy and a serial median.
     meds = np.zeros((10, 10), dtype=np.float32)
-    
-    # For tiles that fit evenly, use reshape + median (faster than loop)
-    crop_h, crop_w = th * 10, tw * 10
-    if crop_h <= h and crop_w <= w:
-        lum_crop = lum[:crop_h, :crop_w]
-        # Reshape to (10, th, 10, tw) and compute medians
-        tiles = lum_crop.reshape(10, th, 10, tw).transpose(0, 2, 1, 3).reshape(10, 10, -1)
-        meds = np.median(tiles, axis=2).astype(np.float32)
-        
-        # Handle edge tiles if image doesn't divide evenly
-        if h > crop_h or w > crop_w:
-            # Bottom row edge
-            if h > crop_h:
-                for j in range(10):
-                    x0, x1 = j * tw, (j + 1) * tw if j < 9 else w
-                    meds[9, j] = np.median(lum[9*th:h, x0:x1])
-            # Right column edge
-            if w > crop_w:
-                for i in range(10):
-                    y0, y1 = i * th, (i + 1) * th if i < 9 else h
-                    meds[i, 9] = np.median(lum[y0:y1, 9*tw:w])
-    else:
-        # Fallback for very small images
-        for i in range(10):
+
+    def _tile_rows(i0, i1):
+        for i in range(i0, i1):
+            y0 = i * th
+            y1 = (i + 1) * th if i < 9 else h
             for j in range(10):
-                y0, x0 = i * th, j * tw
-                y1 = (i + 1) * th if i < 9 else h
+                x0 = j * tw
                 x1 = (j + 1) * tw if j < 9 else w
                 meds[i, j] = np.median(lum[y0:y1, x0:x1])
 
+    run_row_blocks(10, _tile_rows, block=1)
+
     idxs = np.argsort(meds.flatten())[:2]
 
+    rng = np.random.RandomState(_PATCH_SEARCH_SEED)
     finals = []
     for idx in idxs:
         ti, tj = divmod(int(idx), 10)
@@ -145,8 +166,8 @@ def _find_best_patch_center(lum: np.ndarray) -> tuple[int, int]:
         y1 = (ti + 1) * th if ti < 9 else h
         x1 = (tj + 1) * tw if tj < 9 else w
         for _ in range(200):
-            y = np.random.randint(y0, y1)
-            x = np.random.randint(x0, x1)
+            y = rng.randint(y0, y1)
+            x = rng.randint(x0, x1)
             while True:
                 mv, mpos = lum[y, x], (y, x)
                 for dy in (-1, 0, 1):
@@ -198,7 +219,7 @@ def auto_rect_box(img_rgb: np.ndarray, box: int = 50, margin: int = 100) -> tupl
     half = box // 2
 
     # Luminance proxy
-    lum = img_rgb.mean(axis=2).astype(np.float32, copy=False)
+    lum = rgb_mean_f32(img_rgb)
 
     # Your existing routine (assumed to return (cy, cx) in image coords)
     cy, cx = _find_best_patch_center(lum)

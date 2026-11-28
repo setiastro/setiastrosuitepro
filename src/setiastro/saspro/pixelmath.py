@@ -1402,15 +1402,20 @@ class PixelMathDialogPro(QDialog):
         b_help = btns.addButton(self.tr("Help"), QDialogButtonBox.ButtonRole.HelpRole)
         b_help.clicked.connect(self._help)
         
-        # Wrap in a row so the doc help button sits on the left
         btn_row = QHBoxLayout()
         btn_row.setContentsMargins(0, 0, 0, 0)
-        self.btn_doc_help = make_help_button("pixel_math", self)
-        from setiastro.saspro.shortcuts import ShortcutGrip
-        btn_row.addWidget(ShortcutGrip("pixel_math", self))
-        btn_row.addWidget(self.btn_doc_help)
         btn_row.addWidget(btns, 1)
         left_col.addLayout(btn_row)
+
+        # Grip + help: their own row at the bottom of the controls column
+        from setiastro.saspro.shortcuts import ShortcutGrip
+        self.btn_doc_help = make_help_button("pixel_math", self)
+        grip_row = QHBoxLayout()
+        grip_row.setContentsMargins(0, 0, 0, 0)
+        grip_row.addWidget(ShortcutGrip("pixel_math", self))
+        grip_row.addStretch(1)
+        grip_row.addWidget(self.btn_doc_help)
+        left_col.addLayout(grip_row)
 
         # Output group selection model
         self.out_group = QButtonGroup(self)

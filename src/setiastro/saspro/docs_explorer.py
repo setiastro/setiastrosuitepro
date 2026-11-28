@@ -1,7 +1,7 @@
 # src/setiastro/saspro/docs_explorer.py
 # SetiAstro Suite Pro  ·  Franklin Marek  ·  www.setiastro.com
 """
-Documentation explorer: About -> Documentation... (F1).
+Documentation explorer: Help -> Documentation... (F1).
 
 Every built-in help page (docs/*.html, the pages the tools' help buttons open)
 in one window: a contents tree grouped the way the menus are, a search across

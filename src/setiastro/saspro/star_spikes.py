@@ -243,9 +243,6 @@ class StarSpikesDialogPro(QDialog):
         row_actions.addWidget(self.btn_reset)
         row_actions.addWidget(self.btn_help)
         row_actions.addStretch(1)
-        from setiastro.saspro.shortcuts import ShortcutGrip
-        row_actions.addWidget(ShortcutGrip("star_spikes", self))
-        row_actions.addWidget(make_help_button("star_spikes", self))
 
         # --- Status ---
         self.status = QLabel(self.tr("Ready"))
@@ -259,6 +256,14 @@ class StarSpikesDialogPro(QDialog):
         left_v.addLayout(row_actions)
         left_v.addWidget(self.status)
         left_v.addStretch(1)
+        # Grip + help: their own row at the bottom of the controls column
+        from setiastro.saspro.shortcuts import ShortcutGrip
+        grip_row = QHBoxLayout()
+        grip_row.setContentsMargins(0, 0, 0, 0)
+        grip_row.addWidget(ShortcutGrip("star_spikes", self))
+        grip_row.addStretch(1)
+        grip_row.addWidget(make_help_button("star_spikes", self))
+        left_v.addLayout(grip_row)
 
         splitter.addWidget(left)
 

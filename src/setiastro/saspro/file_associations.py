@@ -3,7 +3,7 @@
 File-association management for Seti Astro Suite Pro.
 
 Provides:
-  * A dialog (About -> File Associations...) letting the user make SASpro
+  * A dialog (Help -> File Associations...) letting the user make SASpro
     the default handler for astronomy and image file types.
   * Per-user registration on Windows (HKCU — no admin required) and Linux
     (~/.local/share/applications + xdg-mime).
@@ -366,7 +366,7 @@ def unregister_linux_user() -> tuple[int, list[str]]:
 # ─── Dialog ─────────────────────────────────────────────────────────────────
 
 class FileAssociationsDialog(QDialog):
-    """About → File Associations… — makes SASpro the default handler for
+    """Help → File Associations… — makes SASpro the default handler for
     astronomy and (optionally) general image formats."""
 
     def __init__(self, parent=None):

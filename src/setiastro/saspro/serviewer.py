@@ -208,9 +208,12 @@ class SERViewer(QDialog):
 
     def _build_ui(self):
         # Root: left (viewer) + right (controls)
-        root = QHBoxLayout(self)
-        root.setContentsMargins(8, 8, 8, 8)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(8, 8, 8, 8)
+        outer.setSpacing(8)
+        root = QHBoxLayout()
         root.setSpacing(8)
+        outer.addLayout(root, 1)
 
         # ---------- LEFT: playback + scrubber + preview + zoom ----------
         left = QVBoxLayout()
@@ -466,10 +469,16 @@ class SERViewer(QDialog):
         self.btn_reset = make_reset_button(self)
         self.btn_reset.clicked.connect(self._reset_to_factory)
         help_row.addWidget(self.btn_reset)
-        from setiastro.saspro.shortcuts import ShortcutGrip
-        help_row.addWidget(ShortcutGrip("planetary_stacker", self))
-        help_row.addWidget(make_help_button("planetary_viewer", self))
         right.addLayout(help_row, 0)
+
+        # Grip + help: their own row along the bottom (grip at the lower left)
+        from setiastro.saspro.shortcuts import ShortcutGrip
+        grip_row = QHBoxLayout()
+        grip_row.setContentsMargins(0, 0, 0, 0)
+        grip_row.addWidget(ShortcutGrip("planetary_stacker", self))
+        grip_row.addStretch(1)
+        grip_row.addWidget(make_help_button("planetary_viewer", self))
+        outer.addLayout(grip_row)
 
         # Keep the right panel from getting too wide
         for gb in (opts, stack):

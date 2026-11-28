@@ -2,6 +2,7 @@ from __future__ import annotations
 import numpy as np
 from PyQt6.QtWidgets import QDialog, QFormLayout, QDialogButtonBox, QSpinBox, QDoubleSpinBox, QMessageBox
 from .wavescalede import compute_wavescale_dse
+from .wavescale_hdr import blend_amount, clamp_amount
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Preset editor
@@ -33,10 +34,17 @@ class WaveScaleDSEPresetDialog(QDialog):
         self.iters.setRange(1, 10)
         self.iters.setValue(int(p.get("iterations", 2)))
 
+        self.amount = QSpinBox()
+        self.amount.setRange(0, 100)
+        self.amount.setSuffix(" %")
+        self.amount.setValue(int(round(clamp_amount(p.get("amount", 1.0)) * 100)))
+        self.amount.setToolTip(self.tr("Blend with the original image: 100% is the full effect, 0% leaves it unchanged."))
+
         f.addRow(self.tr("Number of Scales:"), self.n_scales)
         f.addRow(self.tr("Boost Factor:"), self.boost)
         f.addRow(self.tr("Mask Gamma:"), self.gamma)
         f.addRow(self.tr("Iterations:"), self.iters)
+        f.addRow(self.tr("Amount:"), self.amount)
 
         btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel, parent=self)
         btns.accepted.connect(self.accept); btns.rejected.connect(self.reject)
@@ -48,6 +56,7 @@ class WaveScaleDSEPresetDialog(QDialog):
             "boost_factor": float(self.boost.value()),
             "mask_gamma": float(self.gamma.value()),
             "iterations": int(self.iters.value()),
+            "amount": float(self.amount.value()) / 100.0,
         }
 
 
@@ -79,12 +88,15 @@ def run_wavescalede_via_preset(main, preset: dict | None = None, target_doc=None
         boost    = float(p.get("boost_factor", 5.0))
         mgamma   = float(p.get("mask_gamma", 1.0))
         iters    = int(p.get("iterations", 2))
+    # presets made before Amount existed have no key: full effect, as they ran then
+    amount = clamp_amount(p.get("amount", 1.0))
 
     params = {
         "n_scales": n_scales,
         "boost_factor": boost,
         "mask_gamma": mgamma,
         "iterations": iters,
+        "amount": amount,
     }
 
     # --- store for Replay (prefer unified helper) ---
@@ -150,6 +162,7 @@ def run_wavescalede_via_preset(main, preset: dict | None = None, target_doc=None
         blended = img * (1.0 - m3) + out * m3
     else:
         blended = out
+    blended = blend_amount(img, np.asarray(blended, dtype=np.float32), amount)
 
     # collapse back to mono if needed (like dialog apply)
     result = blended
@@ -225,7 +238,9 @@ def _get_doc_active_mask_2d(doc, *, target_hw):
     m = m.astype(np.float32, copy=False)
     mx = float(m.max()) if m.size else 1.0
     if mx > 1.0:
-        m /= mx
+        # a new array: astype(copy=False) can hand back the document's own
+        # float32 mask, which `m /= mx` divided in place (the dialog's fix)
+        m = m / mx
     m = np.clip(m, 0.0, 1.0)
 
     H, W = target_hw

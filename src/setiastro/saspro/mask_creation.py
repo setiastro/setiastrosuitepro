@@ -1303,7 +1303,6 @@ class MaskCreationDialog(QDialog):
         rowb.addWidget(b_undo)
         rowb.addWidget(b_clear)
         rowb.addStretch(1)
-        rowb.addWidget(make_help_button("mask_creation", self))
         layout.addLayout(rowb)
 
         self.status_label = QLabel("")
@@ -1366,7 +1365,12 @@ class MaskCreationDialog(QDialog):
         self.btn_reset = make_reset_button(self)
         self.btn_reset.clicked.connect(self._reset_to_factory)
         btns.addButton(self.btn_reset, QDialogButtonBox.ButtonRole.ActionRole)
-        bottom_row.addWidget(btns)
+        btn_row = QHBoxLayout()
+        btn_row.addStretch(1)
+        btn_row.addWidget(btns)
+        layout.addLayout(btn_row)
+        # Grip + help: their own row at the bottom (grip left, help right)
+        bottom_row.addWidget(make_help_button("mask_creation", self))
         layout.addLayout(bottom_row)
         
         self._undo_shortcut = QShortcut(QKeySequence("Ctrl+Z"), self)

@@ -491,10 +491,6 @@ class AddStarsDialog(QDialog):
 
         # Buttons
         brow = QHBoxLayout()
-        self.btn_help = make_help_button("add_stars", self)
-        from setiastro.saspro.shortcuts import ShortcutGrip
-        brow.addWidget(ShortcutGrip("add_stars", self))
-        brow.addWidget(self.btn_help)
         brow.addStretch(1)
         btn_apply = QPushButton(self.tr("Apply")); btn_apply.clicked.connect(self._apply)
         self.btn_apply = btn_apply
@@ -502,6 +498,16 @@ class AddStarsDialog(QDialog):
         btn_cancel= QPushButton(self.tr("Cancel")); btn_cancel.clicked.connect(self.reject)
         brow.addWidget(btn_apply); brow.addWidget(self.btn_reset); brow.addWidget(btn_cancel)
         layout.addLayout(brow)
+
+        # Grip + help: their own row at the bottom
+        from setiastro.saspro.shortcuts import ShortcutGrip
+        self.btn_help = make_help_button("add_stars", self)
+        grip_row = QHBoxLayout()
+        grip_row.setContentsMargins(0, 0, 0, 0)
+        grip_row.addWidget(ShortcutGrip("add_stars", self))
+        grip_row.addStretch(1)
+        grip_row.addWidget(self.btn_help)
+        layout.addLayout(grip_row)
 
         self.setMinimumSize(900, 650)
 

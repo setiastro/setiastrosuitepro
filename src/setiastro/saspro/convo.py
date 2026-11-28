@@ -452,10 +452,8 @@ class ConvoDeconvoDialog(QDialog):
             self.btn_help = make_help_button("convo", self)
             drag_row.addStretch(1)
             drag_row.addWidget(self.btn_help)
-            
-            left_layout.addLayout(drag_row)
         except Exception:
-            pass
+            drag_row = None
 
         left_layout.addStretch()
         self.rl_status_label = QLabel(""); self.rl_status_label.setStyleSheet("color:#fff;background:#333;padding:4px;")
@@ -470,6 +468,8 @@ class ConvoDeconvoDialog(QDialog):
         status_row.addWidget(self.rl_status_label, stretch=1)
         status_row.addWidget(self.job_cancel_btn)
         left_layout.addLayout(status_row)
+        if drag_row is not None:
+            left_layout.addLayout(drag_row)     # grip + help: the last row of the controls
 
         # Zoom & Preview
         zrow = QHBoxLayout(); zrow.addStretch()

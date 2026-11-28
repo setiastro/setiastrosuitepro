@@ -104,6 +104,10 @@ class SerMeta:
     observer: str = ""
     instrument: str = ""
     telescope: str = ""
+    # Header dates as .NET ticks (100 ns since 0001-01-01); 0 = not set.
+    # DateTime is the capture PC's local time, DateTime_UTC is UTC.
+    date_ticks: int = 0
+    date_utc_ticks: int = 0
 
 
 def _decode_cstr(b: bytes) -> str:
@@ -603,6 +607,10 @@ class SERReader:
         observer = _decode_cstr(hdr[42:82])
         instrument = _decode_cstr(hdr[82:122])
         telescope = _decode_cstr(hdr[122:162])
+        try:
+            date_ticks, date_utc_ticks = struct.unpack_from("<qq", hdr, 162)
+        except Exception:
+            date_ticks = date_utc_ticks = 0
 
         color_name = SER_COLOR.get(int(color_id), f"UNKNOWN({color_id})")
 
@@ -725,6 +733,8 @@ class SERReader:
             observer=observer,
             instrument=instrument,
             telescope=telescope,
+            date_ticks=int(date_ticks),
+            date_utc_ticks=int(date_utc_ticks),
         )
 
     # ---------------- core access ----------------
@@ -953,6 +963,20 @@ class SERReader:
             return None
         (v,) = struct.unpack("<Q", b)
         return int(v)
+
+    def timestamps_ticks(self) -> Optional[np.ndarray]:
+        """
+        Every frame's trailer timestamp as int64 .NET ticks (100 ns since
+        0001-01-01, UTC per the SER spec), in one read; None if there are none.
+        """
+        meta = self.meta
+        if not meta.has_timestamps or meta.frames <= 0:
+            return None
+        off = meta.data_offset + meta.frames * meta.frame_bytes
+        try:
+            return np.frombuffer(self._mm, dtype="<i8", count=int(meta.frames), offset=int(off)).copy()
+        except Exception:
+            return None
 
 
 

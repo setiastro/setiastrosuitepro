@@ -101,12 +101,13 @@ _DOC_TITLES: dict[str, str] = {
     "flythrough": QT_TRANSLATE_NOOP("HelpSupport", "Nebula Flythrough"),
     "unwarp": QT_TRANSLATE_NOOP("HelpSupport", "Astrometric Unwarp"),
     "plate_solver": QT_TRANSLATE_NOOP("HelpSupport", "Plate Solver"),
+    "lunar_solver": QT_TRANSLATE_NOOP("HelpSupport", "Lunar Solver"),
     "star_alignment": QT_TRANSLATE_NOOP("HelpSupport", "Stellar Alignment"),
     "star_registration": QT_TRANSLATE_NOOP("HelpSupport", "Star Registration"),
     "mosaic_master": QT_TRANSLATE_NOOP("HelpSupport", "Mosaic Master"),
     "rgb_align": QT_TRANSLATE_NOOP("HelpSupport", "RGB Align"),
     "surface_mosaic": QT_TRANSLATE_NOOP("HelpSupport", "Surface Mosaic"),
-    "exoplanet": QT_TRANSLATE_NOOP("HelpSupport", "Exoplanet Transit Detector"),
+    "exoplanet": QT_TRANSLATE_NOOP("HelpSupport", "Variable Stars & Exoplanets"),
     "supernova_asteroid_hunter": QT_TRANSLATE_NOOP("HelpSupport", "Supernova / Asteroid Hunter"),
     "glimr": QT_TRANSLATE_NOOP("HelpSupport", "GLIMR — Galaxy Isophote Modeler"),
     "star_spikes": QT_TRANSLATE_NOOP("HelpSupport", "Diffraction Spikes"),
@@ -173,14 +174,62 @@ _MATH_SS = 2             # supersample factor: display at natural_px / _MATH_SS
 _MATH_COLOR = "#e6e6e6"  # doc backgrounds are fixed-dark, so math is always light
 _MATH_CACHE: dict = {}
 _MATH_DIR = None
+_MATH_DIR_NAME = "saspro_doc_math"       # one shared folder under the temp dir
+_MATH_OLD_PREFIX = "sas_doc_math_"       # the per-session folders used before (never deleted)
+_MATH_STALE_S = 24 * 3600                # leave anything written in the last day alone
 
 
 def _math_cache_dir() -> str:
+    """Where equation PNGs live: ONE fixed folder in the temp dir, shared by
+    every session and every install. The file names hash everything that
+    shapes the image, so a file found there is always the right one, and a
+    page renders its equations once, not once per session. (Each session used
+    to mkdtemp its own folder and never delete it.)"""
     global _MATH_DIR
     if _MATH_DIR is None:
         import tempfile
-        _MATH_DIR = tempfile.mkdtemp(prefix="sas_doc_math_")
+        root = tempfile.gettempdir()
+        d = os.path.join(root, _MATH_DIR_NAME)
+        try:
+            os.makedirs(d, exist_ok=True)
+        except Exception:
+            import atexit
+            import shutil
+            d = tempfile.mkdtemp(prefix=_MATH_OLD_PREFIX)
+            atexit.register(shutil.rmtree, d, True)
+        _MATH_DIR = d
+        import threading
+        threading.Thread(target=_sweep_old_math_files, args=(root, d),
+                         name="doc-math-sweep", daemon=True).start()
     return _MATH_DIR
+
+
+def _sweep_old_math_files(root: str, current: str) -> None:
+    """Delete the old per-session folders, and half-written renders a crash left
+    in the shared one. Anything written in the last day is skipped: an older
+    SASpro that is still open may be using its folder."""
+    import shutil
+    import time
+    cutoff = time.time() - _MATH_STALE_S
+    try:
+        for name in os.listdir(root):
+            p = os.path.join(root, name)
+            if name.startswith(_MATH_OLD_PREFIX) and p != current:
+                try:
+                    if os.path.isdir(p) and os.path.getmtime(p) < cutoff:
+                        shutil.rmtree(p, ignore_errors=True)
+                except Exception:
+                    pass
+        for name in os.listdir(current):
+            p = os.path.join(current, name)
+            if name.endswith(".part"):
+                try:
+                    if os.path.getmtime(p) < cutoff:
+                        os.remove(p)
+                except Exception:
+                    pass
+    except Exception:
+        pass
 
 
 def _render_latex_png(latex: str, color: str, fontsize: int) -> "str | None":
@@ -190,7 +239,7 @@ def _render_latex_png(latex: str, color: str, fontsize: int) -> "str | None":
         return None
     key = (latex, color, _MATH_DPI, fontsize)
     cached = _MATH_CACHE.get(key)
-    if cached:
+    if cached and os.path.exists(cached):     # the OS may clean the temp dir mid-session
         return cached
     try:
         import hashlib
@@ -208,14 +257,32 @@ def _render_latex_png(latex: str, color: str, fontsize: int) -> "str | None":
                 pass
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
-        h = hashlib.md5(repr(key).encode("utf-8")).hexdigest()[:16]
+        # the folder is shared across installs: the matplotlib version is part
+        # of the name, so a different renderer never reuses another's image
+        h = hashlib.md5(repr(key + (matplotlib.__version__,)).encode("utf-8")).hexdigest()[:16]
         path = os.path.join(_math_cache_dir(), f"eq_{h}.png")
         if not os.path.exists(path):
+            # render to a private name, then move it into place, so another
+            # SASpro window never reads a half-written PNG
+            import threading
+            tmp = f"{path[:-4]}.{os.getpid()}.{threading.get_ident()}.part"
             fig = plt.figure(figsize=(0.01, 0.01))
-            fig.text(0, 0, f"${latex}$", color=color, fontsize=fontsize)
-            fig.savefig(path, dpi=_MATH_DPI, transparent=True,
-                        bbox_inches="tight", pad_inches=0.06)
-            plt.close(fig)
+            try:
+                fig.text(0, 0, f"${latex}$", color=color, fontsize=fontsize)
+                fig.savefig(tmp, format="png", dpi=_MATH_DPI, transparent=True,
+                            bbox_inches="tight", pad_inches=0.06)
+            finally:
+                plt.close(fig)
+            try:
+                os.replace(tmp, path)
+            except OSError:
+                # another window put it there first (and may be reading it)
+                try:
+                    os.remove(tmp)
+                except OSError:
+                    pass
+                if not os.path.exists(path):
+                    raise
         _MATH_CACHE[key] = path
         return path
     except Exception:

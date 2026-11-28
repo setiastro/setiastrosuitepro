@@ -32,6 +32,7 @@ from setiastro.saspro.resources import (
     pixelmath_path, histogram_path, mosaic_path, rescale_path, staralign_path,
     platesolve_path, psf_path, supernova_path, starregistration_path, csv_icon_path, collage_path,
     stacking_path, pedestal_icon_path, starspike_path, astrospike_path, dithericon_path,gaia_path,surfacemosaic_path,
+    lunarsolver_path,
     signature_icon_path, livestacking_path, quickstack_path, convoicon_path, spcc_icon_path, atlas_path,flythrough_path, unwarp_path,
     exoicon_path, peeker_icon, dse_icon_path, isophote_path, statstretch_path,resizecanvas_path,nbextract_icon,
     starstretch_path, curves_path, disk_path, uhs_path, blink_path, ppp_path, narrowbandnormalization_path,
@@ -363,6 +364,7 @@ class ToolbarMixin:
         tb_star.addAction(self.act_dither_analysis)
         tb_star.addAction(self.act_plate_solve)
         tb_star.addAction(self.act_unwarp)
+        tb_star.addAction(self.act_lunar_solver)
         tb_star.addAction(self.act_supernova_hunter)
         tb_star.addAction(self.act_exo_detector)
         tb_star.addAction(self.act_isophote)
@@ -2031,6 +2033,11 @@ class ToolbarMixin:
         self.act_unwarp.setStatusTip(self.tr("Remove SIP distortion from a plate-solved image"))
         self.act_unwarp.triggered.connect(self._open_unwarp)
 
+        self.act_lunar_solver = QAction(QIcon(lunarsolver_path), self.tr("Lunar Solver..."), self)
+        self.act_lunar_solver.setIconVisibleInMenu(True)
+        self.act_lunar_solver.setStatusTip(self.tr("Find where a lunar image sits on the Moon and label its features"))
+        self.act_lunar_solver.triggered.connect(self._open_lunar_solver)
+
         self.act_star_align = QAction(QIcon(staralign_path), self.tr("Stellar Alignment..."), self)
         self.act_star_align.setIconVisibleInMenu(True)
         self.act_star_align.setStatusTip(self.tr("Align images via astroalign / triangles"))
@@ -2071,9 +2078,11 @@ class ToolbarMixin:
         self.act_astrospike.setStatusTip(self.tr("Advanced diffraction spikes with halos, flares and rainbow effects"))
         self.act_astrospike.triggered.connect(self._open_astrospike)
 
-        self.act_exo_detector = QAction(QIcon(exoicon_path), self.tr("Exoplanet Detector..."), self)
+        # "&&": a lone & is a menu mnemonic.
+        self.act_exo_detector = QAction(QIcon(exoicon_path), self.tr("Variable Stars && Exoplanets..."), self)
         self.act_exo_detector.setIconVisibleInMenu(True)
-        self.act_exo_detector.setStatusTip(self.tr("Detect exoplanet transits from time-series subs"))
+        self.act_exo_detector.setStatusTip(self.tr(
+            "Find variable stars and exoplanet transits in time-series subs"))
         self.act_exo_detector.triggered.connect(self._open_exo_detector)
 
         self.act_isophote = QAction(QIcon(isophote_path), self.tr("GLIMR -- Isophote Modeler..."), self)
@@ -2342,6 +2351,7 @@ class ToolbarMixin:
         reg("plate_solve", self.act_plate_solve)
         reg("cosmetic_correction", self.act_cosmetic_correction)
         reg("unwarp", self.act_unwarp)
+        reg("lunar_solver", self.act_lunar_solver)
         reg("magnitude_tool", self.act_magnitude)
         reg("snr_tool", self.act_snr)
         reg("star_align", self.act_star_align)
@@ -3009,7 +3019,7 @@ class ToolbarMixin:
         """)
 
     def _show_file_associations_dialog(self):
-        """Open the File Associations dialog (About → File Associations…).
+        """Open the File Associations dialog (Help → File Associations…).
 
         Registers SASpro as the default handler for astronomy/image file
         types on Windows (HKCU, no admin) and Linux (~/.local/share/applications

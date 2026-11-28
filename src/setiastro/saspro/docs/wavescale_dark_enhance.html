@@ -77,8 +77,10 @@ negative, rather than all coefficients being amplified).</p>
       pipeline and the main view updates.</li>
   <li>Use <b>Show Original</b> to A/B compare; iterate on the sliders
       and Preview again.</li>
-  <li><b>Apply to Document</b> commits. The dialog stays open for the
-      next image.</li>
+  <li>Set <b>Amount</b> to taste &mdash; it blends the result back
+      with the original, and the preview follows it without
+      recomputing.</li>
+  <li><b>Apply to Document</b> commits and closes the tool.</li>
 </ol>
 
 <h2>2. Dark Enhancer controls</h2>
@@ -155,6 +157,18 @@ can target newly-revealed sub-structure.</p>
       amplify artefacts without adding real detail.</li>
 </ul>
 
+<h3>Amount</h3>
+<p>Slider, 0&ndash;100%, default 100%. How much of the finished
+result to keep: the result is blended with the original image,
+<code>(1&nbsp;&minus;&nbsp;a)&middot;original&nbsp;+&nbsp;a&middot;result</code>.
+100% is the full effect (exactly what the tool produced before
+Amount existed); 0% leaves the image unchanged.</p>
+<p>Amount does not change what the tool computes, only how much of
+it lands, so moving it after a Preview re-blends the preview at once
+without re-running the iterations. It is a finer control than Boost
+Factor or Iterations when the shadows are right in character but a
+little too deep.</p>
+
 <h2>3. The Dark Mask window</h2>
 <p>A 400&times;400 side window showing the current effective mask
 &mdash; the algorithmic darkness mask multiplied by the document's
@@ -175,9 +189,11 @@ changes the result.</p>
       flips to &ldquo;Show Preview&rdquo; when pressed so a second
       press flips back.</li>
   <li><b>Apply to Document</b> commits as an undoable edit named
-      &ldquo;WaveScale Dark Enhancer&rdquo; with the four slider
-      values recorded as its preset. The dialog stays open so you
-      can run on another document.</li>
+      &ldquo;WaveScale Dark Enhancer&rdquo;, at the current Amount,
+      with the five slider values (Amount included) recorded as its
+      preset, and then closes the tool. To run the same settings on
+      another image, drag the preset grip onto it or use Replay Last
+      Action.</li>
   <li><b>Reset</b> returns all sliders to defaults;
       <b>Close</b> discards.</li>
 </ul>
@@ -185,9 +201,18 @@ changes the result.</p>
 <h2>5. Zoom and preset grip</h2>
 <p>Zoom In / Zoom Out / Fit to Preview buttons sit above the
 preview area; the view also supports cursor-anchored wheel/trackpad
-zoom. The preset grip at the bottom-left carries the four slider
-values and can be dragged onto the canvas to make a shortcut tile,
-or dropped onto an image to apply those settings headlessly.</p>
+zoom. The preset grip at the bottom-left carries the five slider
+values (Amount included) and can be dragged onto the canvas to make
+a shortcut tile, or dropped onto an image to apply those settings
+headlessly. The tile's preset editor has the same five settings,
+Amount as a percentage.</p>
+<p>In scripts and on the command line the preset keys are
+<code>n_scales</code>, <code>boost_factor</code>,
+<code>mask_gamma</code>, <code>iterations</code> and
+<code>amount</code> (0&ndash;1, e.g. <code>{'amount': 0.7}</code> for
+70%; <code>--amount 0.7</code> on the command line). A shortcut or
+preset saved before Amount existed has no <code>amount</code> and
+runs at full strength, exactly as it did before.</p>
 
 <h2>6. Technical details</h2>
 <p class="tech-lead">All processing on float32. Luminance is CIE L*
@@ -207,7 +232,7 @@ the B3-spline starlet and mask-multiplication specifics.</p>
            for each intermediate plane:  push its negatives further negative, scaled by mask
            reconstruct L*
                  ↓
-          Lab → RGB  →  mask-blend with original  →  preview</div>
+          Lab → RGB  →  doc-mask blend with original  →  Amount blend  →  preview</div>
 <p>The iteration loop is the main structural difference from HDR
 &mdash; the mask is rebuilt from the current luminance at each pass,
 so what was flat shadow at iteration 1 can reveal new sub-structure
@@ -318,16 +343,24 @@ zero), so there's no risk of highlights clipping past unity &mdash;
 the clip to the valid L* range at the end of each iteration is
 sufficient to keep the result in bounds.</p>
 
-<h3>6.6 Mask-blended composite</h3>
-<p>The gamma-dimming step from HDR is absent, but the final composite
-with the untouched original still uses the effective mask so that
-pixels outside the shadow regions remain exactly as they were:</p>
-<div class="matheq-hero">\mathrm{out} \;=\; (1 - m_{\mathrm{eff}})\,\mathrm{original} \;+\; m_{\mathrm{eff}}\,\mathrm{transformed}</div>
-<p>So midtones and highlights pass through untouched, and only the
-regions the darkness mask selected get the enhanced version. This is
-what makes the tool safe to use before or after any other tonal
-adjustment &mdash; the background sky and brighter regions are
-guaranteed-unchanged by construction.</p>
+<h3>6.6 Composite and Amount</h3>
+<p>The gamma-dimming step from HDR is absent. The darkness mask does
+its selecting <i>inside</i> the enhancement (&sect;&nbsp;6.3: where
+<code>m<sub>eff</sub>&nbsp;=&nbsp;0</code>, <code>e<sub>i</sub>&nbsp;=&nbsp;0</code>),
+so midtones and highlights come out of the pipeline already
+unchanged &mdash; which is what makes the tool safe to use before or
+after any other tonal adjustment. If the document has an active mask
+<code>m<sub>doc</sub></code>, the result is also composited with the
+original through it, so pixels outside the drawn mask are exactly as
+they were:</p>
+<div class="matheq-hero">\mathrm{out} \;=\; (1 - m_{\mathrm{doc}})\,\mathrm{original} \;+\; m_{\mathrm{doc}}\,\mathrm{transformed}</div>
+<p>(with no active mask, <code>out&nbsp;=&nbsp;transformed</code>).
+Finally the Amount slider <code>a</code>&nbsp;&isin;&nbsp;[0,&nbsp;1]
+blends that with the original:</p>
+<div class="matheq-hero">\mathrm{final} \;=\; (1 - a)\,\mathrm{original} \;+\; a\,\mathrm{out}</div>
+<p>At <code>a&nbsp;=&nbsp;1</code> the composite is returned untouched,
+so a full-strength run is identical to the tool before Amount
+existed. <code>final</code> is the preview and what Apply writes.</p>
 
 <h3>6.7 RGB vs mono handling</h3>
 <p>RGB inputs are converted to Lab, operated on in the L* channel,

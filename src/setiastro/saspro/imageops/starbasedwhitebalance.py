@@ -23,6 +23,7 @@ from .stretch import stretch_color_image
 
 # Shared utilities
 from setiastro.saspro.widgets.image_utils import to_float01 as _to_float01
+from setiastro.saspro.widgets.image_utils import run_row_blocks, rgb_mean_f32
 from setiastro.saspro.backgroundneutral import background_neutralize_rgb, auto_rect_50x50
 
 __all__ = [
@@ -193,44 +194,57 @@ def _sample_star_circle_medians(
     keep_idx : (N,) int indices into the input `sources`
     """
     h, w = rgb.shape[:2]
-    rr2 = int(radius) * int(radius)
+    r = int(radius)
+    rr2 = r * r
+    n = len(sources)
 
-    samples = []
-    keep_idx = []
+    # A star's sample is the median of the pixels within `radius` of its
+    # rounded centroid. Stars whose whole (2r+1)^2 window lies inside the
+    # frame share one disc of offsets, so they are gathered and reduced in a
+    # single call; the few at the border keep the clipped per-star window.
+    # Same pixels, same median: identical to the one-star-at-a-time loop
+    # (0.4 s per pass for ~4k stars, and Apply makes three or four passes).
+    samples = np.full((n, rgb.shape[2]), np.nan, dtype=np.float32)
+    if n:
+        xs_f = np.asarray(sources["x"], dtype=np.float64)
+        ys_f = np.asarray(sources["y"], dtype=np.float64)
+        ok = np.isfinite(xs_f) & np.isfinite(ys_f)
+        # np.rint rounds half to even, exactly like int(round(v))
+        cx = np.rint(np.where(ok, xs_f, 0.0)).astype(np.int64)
+        cy = np.rint(np.where(ok, ys_f, 0.0)).astype(np.int64)
 
-    for i in range(len(sources)):
-        cx = int(round(float(sources["x"][i])))
-        cy = int(round(float(sources["y"][i])))
+        oy, ox = np.mgrid[-r:r + 1, -r:r + 1]
+        disc = (ox * ox + oy * oy) <= rr2
+        oy, ox = oy[disc], ox[disc]
 
-        x0 = max(0, cx - radius)
-        x1 = min(w, cx + radius + 1)
-        y0 = max(0, cy - radius)
-        y1 = min(h, cy + radius + 1)
+        inside = ok & (cx - r >= 0) & (cx + r < w) & (cy - r >= 0) & (cy + r < h)
+        ii = np.nonzero(inside)[0]
+        if ii.size:
+            vals = rgb[cy[ii, None] + oy[None, :], cx[ii, None] + ox[None, :]]
+            samples[ii] = np.median(vals, axis=1)
 
-        if x1 <= x0 or y1 <= y0:
-            continue
+        for i in np.nonzero(ok & ~inside)[0]:
+            sx, sy = int(cx[i]), int(cy[i])
+            x0 = max(0, sx - r)
+            x1 = min(w, sx + r + 1)
+            y0 = max(0, sy - r)
+            y1 = min(h, sy + r + 1)
+            if x1 <= x0 or y1 <= y0:
+                continue
+            yy, xx = np.ogrid[y0:y1, x0:x1]
+            mask = ((xx - sx) ** 2 + (yy - sy) ** 2) <= rr2
+            if not np.any(mask):
+                continue
+            vals = rgb[y0:y1, x0:x1, :][mask]
+            if vals.size == 0:
+                continue
+            samples[i] = np.median(vals, axis=0)
 
-        yy, xx = np.ogrid[y0:y1, x0:x1]
-        mask = ((xx - cx) ** 2 + (yy - cy) ** 2) <= rr2
-        if not np.any(mask):
-            continue
-
-        patch = rgb[y0:y1, x0:x1, :]
-        vals = patch[mask]
-        if vals.size == 0:
-            continue
-
-        med = np.median(vals, axis=0).astype(np.float32)
-        if not np.all(np.isfinite(med)):
-            continue
-
-        samples.append(med)
-        keep_idx.append(i)
-
-    if len(samples) == 0:
+    keep = np.all(np.isfinite(samples), axis=1)
+    if not np.any(keep):
         raise ValueError("No valid stellar samples available for white balance.")
-
-    return np.asarray(samples, dtype=np.float32), np.asarray(keep_idx, dtype=np.int32)
+    keep_idx = np.nonzero(keep)[0].astype(np.int32)
+    return samples[keep_idx], keep_idx
 def _spatially_sample_sources(sources: np.ndarray, r: np.ndarray,
                                img_shape: tuple, grid: int = 3,
                                per_cell: int = 500) -> tuple[np.ndarray, np.ndarray]:
@@ -383,7 +397,7 @@ def detect_stars_for_wb(
     rect = auto_rect_50x50(img_rgb)
     bg_neutral = background_neutralize_rgb(img_rgb, rect).astype(np.float32, copy=False)
 
-    gray = np.mean(bg_neutral, axis=2).astype(np.float32, copy=False)
+    gray = rgb_mean_f32(bg_neutral)
     bkg = sep.Background(gray)
     data_sub = gray - bkg.back()
     err_val = float(bkg.globalrms)
@@ -464,6 +478,7 @@ def build_wb_preview_overlay(
     bg_neutral: np.ndarray,
     sources: np.ndarray,
     autostretch: bool = True,
+    max_side: Optional[int] = None,
 ) -> np.ndarray:
     """
     Render the dialog's star-detection preview from an already-computed BN
@@ -476,12 +491,26 @@ def build_wb_preview_overlay(
     bg_neutral : (H,W,3) float32 in [0,1]
     sources    : structured ndarray from sep.extract (needs x, y, a, b, theta)
     autostretch: if True, 0.25 target-median stretch on the display copy
+    max_side   : if set, render at most this many pixels on the long side
+                 (area-downsampled, ellipses scaled to match). The dialog
+                 shows the overlay shrunk into a small label, where a full-
+                 resolution stretch and draw is wasted work. None = full size.
 
     Returns
     -------
     overlay_rgb : (H,W,3) float32 in [0,1] with red SEP ellipses drawn
     """
-    disp = stretch_color_image(bg_neutral.copy(), 0.25) if autostretch else bg_neutral.copy()
+    scale = 1.0
+    view = bg_neutral
+    if max_side is not None and cv2 is not None:
+        H, W = bg_neutral.shape[:2]
+        if max(H, W) > int(max_side):
+            scale = float(max_side) / float(max(H, W))
+            size = (max(1, int(round(W * scale))), max(1, int(round(H * scale))))
+            view = cv2.resize(np.ascontiguousarray(bg_neutral, dtype=np.float32), size,
+                              interpolation=cv2.INTER_AREA)
+
+    disp = stretch_color_image(view.copy(), 0.25) if autostretch else view.copy()
 
     if cv2 is not None:
         overlay_bgr = cv2.cvtColor((disp * 255).astype(np.uint8), cv2.COLOR_RGB2BGR)
@@ -490,6 +519,11 @@ def build_wb_preview_overlay(
             cy = float(sources["y"][i])
             a = float(sources["a"][i])
             b = float(sources["b"][i])
+            if scale != 1.0:
+                cx = (cx + 0.5) * scale - 0.5
+                cy = (cy + 0.5) * scale - 0.5
+                a *= scale
+                b *= scale
             theta_deg = float(sources["theta"][i] * 180.0 / np.pi)
 
             center = (int(round(cx)), int(round(cy)))
@@ -698,20 +732,39 @@ def _apply_color_matrix_wb(
     except Exception as _e:
         print(f"[CC WB] Slope-achieved check skipped: {_e}")
 
-# Apply matrix directly (no pivot shift — matrix was solved in raw pixel space)
-    img      = bg_neutral.astype(np.float64)
-    flat     = img.reshape(-1, 3)
-    out_flat = flat @ M.T
-    out      = out_flat.reshape(img.shape)
+    # Apply matrix directly (no pivot shift — matrix was solved in raw pixel space).
+    # Every per-pixel step below runs in row blocks on threads with the same
+    # expression as the whole-image code, so the result is identical; the 3x3
+    # product stays one BLAS call and the luminance median stays global.
+    H = bg_neutral.shape[0]
+    bn32 = bg_neutral if bg_neutral.dtype == np.float32 else bg_neutral.astype(np.float32)
+
+    img = np.empty(bg_neutral.shape, dtype=np.float64)
+
+    def _to_f64(r0, r1):
+        img[r0:r1] = bg_neutral[r0:r1]
+
+    run_row_blocks(H, _to_f64)
+    out = (img.reshape(-1, 3) @ M.T).reshape(img.shape)
+    img = None     # release the float64 copy
 
     # Debug: report worst negative before any correction
-    min_val = float(np.nanmin(out))
+    _mins, _negs = [], []
+
+    def _neg_stats(r0, r1):
+        blk = out[r0:r1]
+        _mins.append(np.fmin.reduce(blk, axis=None))    # == np.nanmin
+        _negs.append(int(np.count_nonzero(blk < 0.0)))
+
+    run_row_blocks(H, _neg_stats)
+    min_val = float(np.fmin.reduce(np.asarray(_mins)))
     if min_val < 0.0:
-        neg_pixels = np.sum(out < 0.0)
+        neg_pixels = int(sum(_negs))
         print(f"[CC WB] Post-matrix negatives: min={min_val:.4f}, "
               f"affected pixels={neg_pixels} ({100*neg_pixels/out.size:.2f}%)")
 
-    result = out.astype(np.float32)
+    result = np.empty(out.shape, dtype=np.float32)
+    _maxes = []
 
     # Per-pixel negative fix: blend toward the (already linearly WB'd)
     # input where the matrix went negative, weighted by how negative it
@@ -719,27 +772,47 @@ def _apply_color_matrix_wb(
     # at star cores (one channel went strongly negative, lifting the
     # other two above 1.0) which, combined with the ceiling compression
     # below, produced the teal-core artifact.
-    pixel_mins = np.min(result, axis=-1, keepdims=True)  # (H, W, 1)
-    needs_fix = pixel_mins < 0.0
-    if np.any(needs_fix):
-        severity = np.clip(-pixel_mins / 0.2, 0.0, 1.0).astype(np.float32)
-        result = np.where(
-            needs_fix,
-            result * (1.0 - severity) + bg_neutral.astype(np.float32) * severity,
-            result,
-        )
+    def _to_f32_and_fix(r0, r1):
+        blk = result[r0:r1]
+        blk[...] = out[r0:r1]
+        pixel_mins = np.min(blk, axis=-1, keepdims=True)  # (rows, W, 1)
+        needs_fix = pixel_mins < 0.0
+        if np.any(needs_fix):
+            severity = np.clip(-pixel_mins / 0.2, 0.0, 1.0).astype(np.float32)
+            blk[...] = np.where(
+                needs_fix,
+                blk * (1.0 - severity) + bn32[r0:r1] * severity,
+                blk,
+            )
+        _maxes.append(np.fmax.reduce(blk, axis=None))   # == np.nanmax
+
+    run_row_blocks(H, _to_f32_and_fix)
+    out = None     # release the float64 product
 
     # Ceiling: single scalar compress to preserve inter-channel ratios
-    mx = float(np.nanmax(result))
+    mx = float(np.fmax.reduce(np.asarray(_maxes)))
     if mx > 1.0:
-        lum_pivot = float(np.median(
-            0.2126 * result[..., 0] +
-            0.7152 * result[..., 1] +
-            0.0722 * result[..., 2]
-        ))
+        lum = np.empty(result.shape[:2], dtype=np.float32)
+
+        def _lum(r0, r1):
+            blk = result[r0:r1]
+            lum[r0:r1] = (0.2126 * blk[..., 0] +
+                          0.7152 * blk[..., 1] +
+                          0.0722 * blk[..., 2])
+
+        run_row_blocks(H, _lum)
+        lum_pivot = float(np.median(lum))
+        lum = None
         denom = max(mx - lum_pivot, 1e-8)
         a = (1.0 - lum_pivot) / denom
-        result = lum_pivot + (result - lum_pivot) * a
+
+        def _ceiling(r0, r1):
+            blk = result[r0:r1]      # lum_pivot + (result - lum_pivot) * a
+            blk -= lum_pivot
+            blk *= a
+            blk += lum_pivot
+
+        run_row_blocks(H, _ceiling)
 
     # Highlight protection: blend matrix output back toward the linearly
     # WB'd input for near-saturated pixels. The matrix is trained on
@@ -751,14 +824,19 @@ def _apply_color_matrix_wb(
     # trained on — and since after_star_pixels is sampled from this reverted
     # image, the After diagnostic plot then under-reported whatever rotation
     # survived. 0.92 still protects genuinely blown cores.
-    L_in = (0.2126 * bg_neutral[..., 0]
-            + 0.7152 * bg_neutral[..., 1]
-            + 0.0722 * bg_neutral[..., 2]).astype(np.float32)
     edge0, edge1 = 0.92, 0.995
-    t = np.clip((L_in - edge0) / (edge1 - edge0), 0.0, 1.0)
-    w = (t * t * (3.0 - 2.0 * t))[..., None]
-    result = (result * (1.0 - w)
-              + bg_neutral.astype(np.float32) * w).astype(np.float32)
+
+    def _highlight(r0, r1):
+        bnb = bg_neutral[r0:r1]
+        L_in = (0.2126 * bnb[..., 0]
+                + 0.7152 * bnb[..., 1]
+                + 0.0722 * bnb[..., 2]).astype(np.float32)
+        t = np.clip((L_in - edge0) / (edge1 - edge0), 0.0, 1.0)
+        w = (t * t * (3.0 - 2.0 * t))[..., None]
+        blk = result[r0:r1]
+        blk[...] = (blk * (1.0 - w) + bn32[r0:r1] * w).astype(np.float32)
+
+    run_row_blocks(H, _highlight)
 
     return result
 def apply_star_based_white_balance(
@@ -874,11 +952,6 @@ def apply_star_based_white_balance(
     # ------------------------------------------------------------------
     # 2) Detect stars on BN luminance
     # ------------------------------------------------------------------
-    gray = np.mean(bg_neutral, axis=2).astype(np.float32, copy=False)
-    bkg = sep.Background(gray)
-    data_sub = gray - bkg.back()
-    err_val = float(bkg.globalrms)
-
     global cached_star_sources, cached_flux_radii, _cached_shape, _cached_threshold
 
     # Cache gate — mirrors detect_stars_for_wb so that Preview → Apply on
@@ -907,6 +980,13 @@ def apply_star_based_white_balance(
         # the σ actually used (the cached one), not the input.
         used_threshold = float(_cached_threshold)
     else:
+        # Detection inputs, built only when the cache cannot answer: an Apply
+        # after the dialog's own detection skips them (~1 s on 30 MP).
+        gray = rgb_mean_f32(bg_neutral)
+        bkg = sep.Background(gray)
+        data_sub = gray - bkg.back()
+        err_val = float(bkg.globalrms)
+
         if auto_sigma:
             # σ waterfall — BN already done, so this only re-runs sep.extract
             sources, used_threshold = _waterfall_sep_extract(
@@ -1093,8 +1173,18 @@ def apply_star_based_white_balance(
     m = pivot.reshape((1, 1, 3)).astype(np.float32)
     g = final_scaling.reshape((1, 1, 3)).astype(np.float32)
 
-    balanced = (bg_neutral.astype(np.float32) - m) * g + m
-    balanced = np.clip(balanced, 0.0, 1.0).astype(np.float32, copy=False)
+    # clip((bg_neutral - m) * g + m, 0, 1): same arithmetic, one buffer,
+    # row blocks on threads.
+    balanced = np.empty(bg_neutral.shape, dtype=np.float32)
+
+    def _balance_rows(r0, r1):
+        blk = balanced[r0:r1]
+        np.subtract(bg_neutral[r0:r1], m, out=blk)
+        blk *= g
+        blk += m
+        np.clip(blk, 0.0, 1.0, out=blk)
+
+    run_row_blocks(balanced.shape[0], _balance_rows)
     # ── 5b) Color matrix WB (advanced, non-linear) ────────────────────────
     if use_color_matrix:
         # Re-sample star pixels from the already linearly-balanced image
@@ -1179,6 +1269,10 @@ class StarDetectionWorker(QThread):
         auto_sigma_min_stars: int = DEFAULT_AUTO_SIGMA_MIN_STARS,
         auto_sigma_ladder: Sequence[float] = DEFAULT_AUTO_SIGMA_LADDER,
         with_overlay: bool = False,
+        overlay_max_side: Optional[int] = None,
+        known_sources: Optional[np.ndarray] = None,
+        known_count: int = 0,
+        known_sigma: float = 0.0,
     ):
         super().__init__(parent)
         self._image = np.asarray(image, dtype=np.float32)
@@ -1189,6 +1283,15 @@ class StarDetectionWorker(QThread):
         self._auto_sigma_min_stars = int(auto_sigma_min_stars)
         self._auto_sigma_ladder = tuple(float(x) for x in auto_sigma_ladder)
         self._with_overlay = bool(with_overlay)
+        self._overlay_max_side = overlay_max_side
+        # Preview-only mode: the stars were already detected on this exact
+        # image (the dialog's open-time pass). Rebuild only the neutralized
+        # view and draw them -- no second SEP waterfall.
+        self._known_sources = known_sources
+        self._known_count = int(known_count)
+        self._known_sigma = float(known_sigma)
+        # What this run detected (or reused), for the dialog to keep.
+        self.sources = None
         # Populated by detect_stars_for_wb via on_sigma_resolved as a
         # fallback — the direct return value is used first.
         self._resolved_threshold: float = float(threshold)
@@ -1198,24 +1301,35 @@ class StarDetectionWorker(QThread):
 
     def run(self):
         try:
-            def _on_resolved(sig: float):
-                self._resolved_threshold = float(sig)
+            if self._known_sources is not None:
+                # Same neutralization detect_stars_for_wb does (the
+                # background box is deterministic), on the same image.
+                img = _to_float01(self._image).astype(np.float32, copy=False)
+                bg_neutral = background_neutralize_rgb(
+                    img, auto_rect_50x50(img)).astype(np.float32, copy=False)
+                sources = self._known_sources
+                count, used_sigma = self._known_count, self._known_sigma
+            else:
+                def _on_resolved(sig: float):
+                    self._resolved_threshold = float(sig)
 
-            count, used_sigma, sources, bg_neutral = detect_stars_for_wb(
-                self._image,
-                threshold=self._threshold,
-                reuse_cached_sources=False,
-                auto_sigma=self._auto_sigma,
-                auto_sigma_min_stars=self._auto_sigma_min_stars,
-                auto_sigma_ladder=self._auto_sigma_ladder,
-                on_sigma_resolved=_on_resolved,
-            )
+                count, used_sigma, sources, bg_neutral = detect_stars_for_wb(
+                    self._image,
+                    threshold=self._threshold,
+                    reuse_cached_sources=False,
+                    auto_sigma=self._auto_sigma,
+                    auto_sigma_min_stars=self._auto_sigma_min_stars,
+                    auto_sigma_ladder=self._auto_sigma_ladder,
+                    on_sigma_resolved=_on_resolved,
+                )
+            self.sources = sources
             if self._cancelled:
                 return
 
             if self._with_overlay:
                 overlay = build_wb_preview_overlay(
-                    bg_neutral, sources, autostretch=self._autostretch
+                    bg_neutral, sources, autostretch=self._autostretch,
+                    max_side=self._overlay_max_side,
                 )
                 if self._cancelled:
                     return

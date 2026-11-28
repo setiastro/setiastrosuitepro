@@ -3097,6 +3097,15 @@ class WhatsInMySkyDialog(QDialog):
         moon_hbox.addLayout(moon_text, 1)
         left_vbox.addWidget(moon_frame, 0)
 
+        # Grip + help: their own row at the bottom of the left column
+        from setiastro.saspro.shortcuts import ShortcutGrip
+        grip_row = QHBoxLayout()
+        grip_row.setContentsMargins(10, 4, 10, 6)
+        grip_row.addWidget(ShortcutGrip("whats_in_my_sky", self))
+        grip_row.addStretch(1)
+        grip_row.addWidget(make_help_button("whats_in_my_sky", self))
+        left_vbox.addLayout(grip_row)
+
         # ── Middle panel — Object Type Filter ────────────────────────────
         mid_outer = QFrame()
         mid_outer.setFixedWidth(180)
@@ -3219,10 +3228,6 @@ class WhatsInMySkyDialog(QDialog):
             b.setFixedHeight(28)
             b.setStyleSheet(_TOOLBAR_BTN_STYLE)
             toolbar.addWidget(b)
-
-        from setiastro.saspro.shortcuts import ShortcutGrip
-        toolbar.addWidget(ShortcutGrip("whats_in_my_sky", self))
-        toolbar.addWidget(make_help_button("whats_in_my_sky", self))
 
         settings_btn.setFixedHeight(28)
         settings_btn.setStyleSheet(_WRENCH_BTN_STYLE)

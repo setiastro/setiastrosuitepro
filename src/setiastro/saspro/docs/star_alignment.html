@@ -44,10 +44,10 @@
 <body>
 
 <h1>Stellar Alignment</h1>
-<p class="sub">Register one image onto another's pixel grid — using stars, plate solutions, or both — the engine behind Stacking Suite, Dither Analysis, Exoplanet Hunter, and every other SASpro tool that needs frames in the same coordinate system.</p>
+<p class="sub">Register one image onto another's pixel grid — using stars, plate solutions, or both — the engine behind Stacking Suite, Dither Analysis, Variable Stars &amp; Exoplanets, and every other SASpro tool that needs frames in the same coordinate system.</p>
 
 <div class="hero">
-<b>The quiet workhorse.</b> This tool solves the geometric problem of taking a target image and warping it so every pixel sees the same patch of sky as the corresponding pixel in a reference image. Standalone it's a two-image dialog with a preview; under the hood it's the same code that stacks hundreds of light frames in Stacking Suite, that measures per-frame drift in Dither Analysis, that locks a target star in place across a time-series in Exoplanet Hunter, and that solves panel-to-panel geometry in Mosaic Master. Three alignment methods (Stellar, WCS/SIP, WCS→Stellar refinement) handle everything from "two frames of the same scope on the same night" to "same object through two different telescopes with different FOVs and a meridian flip in between".
+<b>The quiet workhorse.</b> This tool solves the geometric problem of taking a target image and warping it so every pixel sees the same patch of sky as the corresponding pixel in a reference image. Standalone it's a two-image dialog with a preview; under the hood it's the same code that stacks hundreds of light frames in Stacking Suite, that measures per-frame drift in Dither Analysis, that locks a target star in place across a time-series in Variable Stars &amp; Exoplanets, and that solves panel-to-panel geometry in Mosaic Master. Three alignment methods (Stellar, WCS/SIP, WCS→Stellar refinement) handle everything from "two frames of the same scope on the same night" to "same object through two different telescopes with different FOVs and a meridian flip in between".
 </div>
 
 <h2>1. Picking a source and target</h2>
@@ -170,7 +170,7 @@
   <li><code>{"type": "file", "path": "/abs/path.fits"}</code> — load the reference from disk.</li>
 </ul>
 
-<p>Dropping the preset onto a target view runs the alignment headlessly — detect stars, solve the transform, warp, deliver — with no dialog. When <code>overwrite</code> is true the target doc is replaced in place; otherwise a new view is created. The default behavior across SASpro tools that depend on alignment (Stacking Suite, Dither, Exoplanet Hunter) is to call this engine directly rather than through the dialog, so the same math and the same tuning parameters apply everywhere.</p>
+<p>Dropping the preset onto a target view runs the alignment headlessly — detect stars, solve the transform, warp, deliver — with no dialog. When <code>overwrite</code> is true the target doc is replaced in place; otherwise a new view is created. The default behavior across SASpro tools that depend on alignment (Stacking Suite, Dither, Variable Stars &amp; Exoplanets) is to call this engine directly rather than through the dialog, so the same math and the same tuning parameters apply everywhere.</p>
 
 <h2>10. Technical details</h2>
 <p class="tech-lead">The star detection, triangle matching, RANSAC geometry fitting, downsample lift math, multi-pass refinement, and the anti-ring warp.</p>

@@ -151,21 +151,22 @@ Cards go <b style="color:#ff6b6b">red</b> when nothing is loaded, <b style="colo
 
 <h3>3.1 Left pane: raw darks tree</h3>
 <ul>
-  <li><b>Dark Frames tree</b> &mdash; grouped by exposure (seconds) and image size; metadata column shows file count, total integration time, temperature bucket, gain and offset.</li>
+  <li><b>Dark Frames tree</b> &mdash; grouped by exposure (seconds) and image size; metadata column shows file count, total integration time, temperature, gain and offset; each dark's row also shows the night it was shot. Temperatures are grouped in the steps set in Settings (<i>Temp grouping step</i>), but the rows show the darks' real temperatures, and master darks are named by their median temperature.</li>
   <li><b>Add Dark Files</b>, <b>Add Dark Directory</b> &mdash; adds files or scans a folder. The directory scan honours <i>Recurse subfolders</i> and sorts by <code>IMAGETYP</code>: darks stay here, flats are routed to the Flats tab, lights to the Lights tab.</li>
   <li><b>Recurse subfolders</b> &mdash; shared with the Flats and Lights tabs via the <code>stacking/recurse_dirs</code> setting.</li>
-  <li><b>Auto-detect session</b> &mdash; shared with Flats/Lights. For darks this is cosmetic only: masters always bucket by (exposure, size, temp, gain, offset) regardless of capture date, so your January and June darks of the same exposure can combine.</li>
+  <li><b>Auto-detect session</b> &mdash; shared with Flats/Lights. Darks don't use sessions, so it doesn't change how they combine; capture dates do that (<i>New master after a gap of</i>, 3.2).</li>
   <li><b>Clear Selection</b> &mdash; removes highlighted items from the tree only.</li>
 </ul>
 
 <h3>3.2 Right pane</h3>
 <ul>
   <li><b>Exposure Tolerance (seconds)</b> &mdash; 0&ndash;30 s window around each exposure for grouping (default 5 s). Prevents a 299.8&nbsp;s dark being orphaned from a 300.0&nbsp;s group.</li>
-  <li><b>Turn Those Darks Into Master Darks</b> &mdash; the big yellow-bordered button. Builds one master per unique (exposure, size, temperature bucket, gain, offset) group using the <b>Calibration Rejection Algorithm</b> set in Settings (default: Winsorized Sigma Clipping).</li>
+  <li><b>New master after a gap of</b> &mdash; darks with the same exposure, size, temperature, gain and offset make one master until there is a gap of more than this many days between the nights they were shot (default 30 days; <i>every night</i> makes one master per night). A dark library shot over a few nights stays one master, while darks from other months or years become separate masters, named by their first night (<code>MasterDark_2025-11-20_300s_&hellip;</code>). Darks with no capture date combine as before. Each light, and each flat group, then uses the master nearest its own date (the Dark rows on the Flats and Lights tabs show which).</li>
+  <li><b>Turn Those Darks Into Master Darks</b> &mdash; the big yellow-bordered button. Builds one master per unique (exposure, size, temperature bucket, gain, offset) group, split where the darks' capture dates leave a gap (above), using the <b>Calibration Rejection Algorithm</b> set in Settings (default: Winsorized Sigma Clipping).</li>
 </ul>
 
 <h3>3.3 Right-click &amp; context</h3>
-<p>Right-click any raw-dark row for <b>Set Session Tag&hellip;</b>. Darks are session-agnostic for integration (see 3.1), but the tag is preserved in the tree for your reference.</p>
+<p>Right-click any raw-dark row for <b>Set Session Tag&hellip;</b>. Darks don't use session tags (see 3.1); they split by capture date instead (3.2). The tag is kept in the tree for your reference.</p>
 
 <h3>3.4 Master Darks list</h3>
 <p>Shows every master dark currently loaded, with its exposure and file path. <b>Load Master Dark</b> adds a pre-built master from disk; <b>Clear Selection</b> removes items from the list and persists the change.</p>
@@ -185,7 +186,7 @@ Cards go <b style="color:#ff6b6b">red</b> when nothing is loaded, <b style="colo
 <h3>4.2 Right pane</h3>
 <ul>
   <li><b>Exposure Tolerance (seconds)</b> &mdash; sub-second precision (0&ndash;30&nbsp;s, step 0.01), persisted. Flats are usually short, so a tight tolerance groups 1.1&nbsp;s and 1.2&nbsp;s shots correctly.</li>
-  <li><b>Auto-Select Closest Master Dark</b> &mdash; for every flat group, picks a master dark of the same size, then with matching GAIN/OFFSET (within 1 count), then the nearest exposure, then the nearest temperature. Unchecked, a group gets no dark unless you pick one in its Dark row.</li>
+  <li><b>Auto-Select Closest Master Dark</b> &mdash; for every flat group, picks a master dark of the same size, then with matching GAIN/OFFSET (within 1 count), then the nearest exposure, then the nearest date, then the nearest temperature. Unchecked, a group gets no dark unless you pick one in its Dark row.</li>
   <li><b>Turn Those Flats Into Master Flats</b> &mdash; builds one master flat per (filter, size, session) group.</li>
 </ul>
 
@@ -197,7 +198,7 @@ Cards go <b style="color:#ff6b6b">red</b> when nothing is loaded, <b style="colo
   <li><b>None</b> &mdash; flats go through without any dark subtraction. Useful for cameras where the flat-dark pedestal is baked in.</li>
   <li><b>Add a master dark&hellip;</b> &mdash; loads one (as <i>Load Master Dark</i> does) and uses it for this group.</li>
 </ul>
-<p>The badge beside it says why: <b>✓ auto</b>, <b>✎ your choice</b> or <b>✎ none</b>, plus a <b>⚠</b> when the dark is another size, its exposure differs by more than 5% (or the exposure tolerance), its gain or offset differs, or its temperature differs by more than 2&nbsp;&deg;C. <b>Turn Those Flats Into Master Flats</b> uses exactly the dark each row shows.</p>
+<p>The badge beside it says why: <b>✓ auto</b>, <b>✎ your choice</b> or <b>✎ none</b>, plus a <b>⚠</b> when the dark is another size, its exposure differs by more than 5% (or the exposure tolerance), its gain or offset differs, its temperature differs by more than 2&nbsp;&deg;C, or its darks were shot further from the frames than <i>New master after a gap of</i> (3.2). <b>Turn Those Flats Into Master Flats</b> uses exactly the dark each row shows.</p>
 <p>Right-click a flat group for <b>Set Session Tag&hellip;</b>, which retags the whole group.</p>
 
 <a id="lights"></a>
@@ -208,7 +209,7 @@ Cards go <b style="color:#ff6b6b">red</b> when nothing is loaded, <b style="colo
 <p>Five columns: Filter &amp; Exposure, Metadata, Master Dark, Master Flat, Corrections. Grouped by filter at the top level and by (exposure, size) beneath. Each frame shows the masters it gets (<b>✎</b> marks a frame's own pick, &sect;5.6).</p>
 <p>Under each group:</p>
 <ul>
-  <li><b>Dark</b> &mdash; the master dark for the whole group. Auto picks one of the same size, then with matching GAIN/OFFSET, then the nearest exposure, then the nearest temperature.</li>
+  <li><b>Dark</b> &mdash; the master dark for the whole group. Auto picks one of the same size, then with matching GAIN/OFFSET, then the nearest exposure, then the nearest date, then the nearest temperature. Frames of one group shot far apart can get different darks; the row then says how many.</li>
   <li><b>Flat</b> &mdash; one row per session (night) in the group, since flats are matched by night. Auto picks a master flat of the same filter and size from the same night, else the nearest night, preferring a matching gain.</li>
   <li><b>N frames</b> &mdash; click to list or hide the group's frames.</li>
 </ul>

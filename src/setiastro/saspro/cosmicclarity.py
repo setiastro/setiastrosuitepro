@@ -1052,7 +1052,6 @@ class CosmicClarityDialogPro(QDialog):
         b_reset.clicked.connect(self._reset_to_factory)
         row.addWidget(self.btn_clear_cache)
         row.addStretch(1)
-        row.addWidget(make_help_button("cosmic_clarity", self))
         row.addWidget(b_run)
         row.addWidget(b_reset)
         row.addWidget(b_close)
@@ -1077,6 +1076,7 @@ class CosmicClarityDialogPro(QDialog):
             )
             drag_row.addWidget(self.preset_drag_handle)
             drag_row.addStretch(1)   # push grip hard to the LEFT edge
+            drag_row.addWidget(make_help_button("cosmic_clarity", self))
             outer.addLayout(drag_row)
         except Exception:
             pass
@@ -2349,9 +2349,6 @@ class CosmicClaritySatelliteDialogPro(QDialog):
         self.btn_out = QPushButton(self.tr("Select Output Folder")); self.btn_out.clicked.connect(self._choose_output)
         row_io.addWidget(self.btn_in)
         row_io.addWidget(self.btn_out)
-        from setiastro.saspro.shortcuts import ShortcutGrip
-        row_io.addWidget(ShortcutGrip("cosmicclaritysat", self))
-        row_io.addWidget(make_help_button("cosmic_clarity_satellite", self))
         left.addLayout(row_io)
 
         left.addWidget(QLabel(self.tr("Use GPU Acceleration:")))
@@ -2410,6 +2407,14 @@ class CosmicClaritySatelliteDialogPro(QDialog):
         left.addWidget(self.btn_monitor)
 
         left.addStretch(1)
+        # Grip + help: their own row at the bottom of the controls column
+        from setiastro.saspro.shortcuts import ShortcutGrip
+        grip_row = QHBoxLayout()
+        grip_row.setContentsMargins(0, 0, 0, 0)
+        grip_row.addWidget(ShortcutGrip("cosmicclaritysat", self))
+        grip_row.addStretch(1)
+        grip_row.addWidget(make_help_button("cosmic_clarity_satellite", self))
+        left.addLayout(grip_row)
 
         # Right side
         right = QVBoxLayout()

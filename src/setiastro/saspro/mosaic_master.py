@@ -2425,9 +2425,6 @@ class MosaicMasterDialog(QDialog):
 
         # ══ bottom bar ════════════════════════════════════════════════════
         bar = QHBoxLayout()
-        from setiastro.saspro.shortcuts import ShortcutGrip
-        bar.addWidget(ShortcutGrip("mosaic_master", self))
-        bar.addWidget(make_help_button("mosaic_master", self))
         self.status_label = QLabel(self.tr("Add panels to begin."))
         # plate_solver's _set_status_ui looks for a child QLabel with exactly
         # this objectName to route the solver's progress into this window.
@@ -2464,6 +2461,14 @@ class MosaicMasterDialog(QDialog):
         self.resetBtn.clicked.connect(self._reset_to_factory)
         bar.addWidget(self.resetBtn)
         root.addLayout(bar)
+        # Grip + help: their own row at the bottom
+        from setiastro.saspro.shortcuts import ShortcutGrip
+        grip_row = QHBoxLayout()
+        grip_row.setContentsMargins(0, 0, 0, 0)
+        grip_row.addWidget(ShortcutGrip("mosaic_master", self))
+        grip_row.addStretch(1)
+        grip_row.addWidget(make_help_button("mosaic_master", self))
+        root.addLayout(grip_row)
 
         self._result_display = None
         self._result_stale = False

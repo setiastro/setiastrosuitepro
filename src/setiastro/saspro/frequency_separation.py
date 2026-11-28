@@ -932,6 +932,17 @@ class FrequencySeperationTab(QWidget):
         self.spinnerLabel.hide()
         left.addWidget(self.spinnerLabel)
 
+        left.addStretch(1)
+        # Grip + help: their own row at the bottom of the controls column
+        from setiastro.saspro.shortcuts import ShortcutGrip
+        self.btn_doc_help = make_help_button("frequency_separation", self)
+        grip_row = QHBoxLayout()
+        grip_row.setContentsMargins(0, 0, 0, 0)
+        grip_row.addWidget(ShortcutGrip("freqsep", self))
+        grip_row.addStretch(1)
+        grip_row.addWidget(self.btn_doc_help)
+        left.addLayout(grip_row)
+
         main.addWidget(left_host, 0)
 
         # right previews
@@ -950,10 +961,6 @@ class FrequencySeperationTab(QWidget):
         top_row.addWidget(self.btn_zoom_out)
         top_row.addWidget(self.btn_fit)
 
-        self.btn_doc_help = make_help_button("frequency_separation", self)
-        from setiastro.saspro.shortcuts import ShortcutGrip
-        top_row.addWidget(ShortcutGrip("freqsep", self))
-        top_row.addWidget(self.btn_doc_help)
 
         right.addLayout(top_row)
 

@@ -2834,10 +2834,15 @@ class MagnitudeToolDialog(QDialog):
         self.btn_close.clicked.connect(self.reject)
         bottom.addWidget(self.btn_close)
         bottom.addStretch(1)
-        from setiastro.saspro.shortcuts import ShortcutGrip
-        bottom.addWidget(ShortcutGrip("magnitude_tool", self))
-        bottom.addWidget(make_help_button("magnitude_tool", self))
         root.addLayout(bottom)
+        # Grip + help: their own row at the bottom
+        from setiastro.saspro.shortcuts import ShortcutGrip
+        grip_row = QHBoxLayout()
+        grip_row.setContentsMargins(0, 0, 0, 0)
+        grip_row.addWidget(ShortcutGrip("magnitude_tool", self))
+        grip_row.addStretch(1)
+        grip_row.addWidget(make_help_button("magnitude_tool", self))
+        root.addLayout(grip_row)
  
         self._refresh_aavso_button()
 

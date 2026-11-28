@@ -15,7 +15,7 @@ An image that already looks stretched skips straight to Curves. Step 1 also offe
 
 Starts once, after the welcome screen closes, on a brand-new install (no
 saved window layout) -- so `--firstrun` shows it every time -- and any time
-from About > First Steps Tour. Skipping or finishing marks it done.
+from Help > First Steps Tour. Skipping or finishing marks it done.
 
 Wording lives in _STEPS below, so it can be tuned without touching the logic.
 """
@@ -84,7 +84,7 @@ _STEPS = {
         QT_TRANSLATE_NOOP("FirstStepsTour", "Open Curves Editor"), "curves"),
     "done": (
         QT_TRANSLATE_NOOP("FirstStepsTour", "Done"), QT_TRANSLATE_NOOP("FirstStepsTour", "You've processed your first image"),
-        QT_TRANSLATE_NOOP("FirstStepsTour", "Ctrl+Z undoes any step, and the History menu lists them all.\n\n"
+        QT_TRANSLATE_NOOP("FirstStepsTour", "Ctrl+Z undoes any step, and Edit → History Explorer lists them all.\n\n"
         "A full workflow removes gradients and calibrates colour before "
         "stretching. The beginner tutorial walks through it."),
         QT_TRANSLATE_NOOP("FirstStepsTour", "Watch the tutorial"), "tutorial"),
@@ -212,7 +212,8 @@ class _Spotlight(QWidget):
         out = []
         if act is None:
             return out
-        label = act.text().replace("&", "").rstrip(".… ").strip()
+        label = (act.text().replace("&&", "\0").replace("&", "").replace("\0", "&")
+                 .rstrip(".… ").strip())
         for tb in mw.findChildren(QToolBar):
             try:
                 if not tb.isVisible() or tb.isFloating():
@@ -688,7 +689,7 @@ class FirstStepsTour(QFrame):
 
 
 def start_first_steps_tour(main_window):
-    """Show the tour now (About > First Steps Tour, or a new install)."""
+    """Show the tour now (Help > First Steps Tour, or a new install)."""
     old = getattr(main_window, "_first_steps_tour", None)
     if _alive(old):
         old.close()

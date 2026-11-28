@@ -331,10 +331,6 @@ class CloneStampDialogPro(QDialog):
         self.btn_undo.setEnabled(False)
         self.btn_redo.setEnabled(False)
 
-        self.btn_help = make_help_button("clone_stamp", self)
-        from setiastro.saspro.shortcuts import ShortcutGrip
-        bb.addWidget(ShortcutGrip("clone_stamp", self))
-        bb.addWidget(self.btn_help)
         bb.addStretch()
         bb.addWidget(self.btn_undo)
         bb.addWidget(self.btn_redo)
@@ -374,6 +370,16 @@ class CloneStampDialogPro(QDialog):
         right.addWidget(btn_row, 0)
 
         right.addStretch(1)
+
+        # Grip + help: their own row at the bottom of the controls column
+        from setiastro.saspro.shortcuts import ShortcutGrip
+        self.btn_help = make_help_button("clone_stamp", self)
+        grip_row = QHBoxLayout()
+        grip_row.setContentsMargins(0, 0, 0, 0)
+        grip_row.addWidget(ShortcutGrip("clone_stamp", self))
+        grip_row.addStretch(1)
+        grip_row.addWidget(self.btn_help)
+        right.addLayout(grip_row)
 
         right_widget = QWidget(self)
         right_widget.setLayout(right)

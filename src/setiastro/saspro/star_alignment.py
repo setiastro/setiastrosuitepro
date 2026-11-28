@@ -1754,7 +1754,6 @@ class StellarAlignmentDialog(QDialog):
         self.btn_reset = make_reset_button(self)
         self.btn_reset.clicked.connect(self._reset_to_factory)
         run_row.addWidget(self.btn_reset)
-        run_row.addWidget(make_help_button("star_alignment", self))
         controls.addLayout(run_row)
 
         # Drag-to-canvas grip (PI-style "new instance"). Deferred import
@@ -1795,16 +1794,22 @@ class StellarAlignmentDialog(QDialog):
             )
             drag_row.addWidget(self.preset_drag_handle)
             drag_row.addStretch(1)
-            controls.addLayout(drag_row)
         except Exception:
             # If shortcuts.py isn't importable in this host (e.g. test
             # harness), silently skip the grip — the rest of the dialog
             # still works.
-            pass
+            drag_row = None
 
         self.status_label = QLabel(self.tr("Status: Ready"))
         self.status_label.setAlignment(Qt.AlignmentFlag.AlignLeft)
         controls.addWidget(self.status_label)
+
+        # Grip + help: the last row of the controls column
+        if drag_row is None:
+            drag_row = QHBoxLayout()
+            drag_row.addStretch(1)
+        drag_row.addWidget(make_help_button("star_alignment", self))
+        controls.addLayout(drag_row)
 
         L.addLayout(controls)
 
@@ -8038,11 +8043,16 @@ class StarRegistrationWindow(QWidget):
         self.btn_reset = make_reset_button(self)
         self.btn_reset.clicked.connect(self._reset_to_factory)
         start_row.addWidget(self.btn_reset)
-        from setiastro.saspro.shortcuts import ShortcutGrip
-        start_row.addWidget(ShortcutGrip("star_register", self))
-        start_row.addWidget(make_help_button("star_registration", self))
         main_layout.addWidget(self.progress_label)
         main_layout.addLayout(start_row)
+        # Grip + help: their own row at the bottom
+        from setiastro.saspro.shortcuts import ShortcutGrip
+        grip_row = QHBoxLayout()
+        grip_row.setContentsMargins(0, 0, 0, 0)
+        grip_row.addWidget(ShortcutGrip("star_register", self))
+        grip_row.addStretch(1)
+        grip_row.addWidget(make_help_button("star_registration", self))
+        main_layout.addLayout(grip_row)
 
     def _enqueue_progress(self, message: str) -> None:
         # Save only the latest message; start the coalescing timer

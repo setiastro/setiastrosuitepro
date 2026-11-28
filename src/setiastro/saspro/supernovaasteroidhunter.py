@@ -3029,9 +3029,6 @@ class SupernovaAsteroidHunterDialog(QDialog):
         ))
         self.redetect_button.clicked.connect(self._on_redetect_from_main)
         run_row.addWidget(self.redetect_button)
-        from setiastro.saspro.shortcuts import ShortcutGrip
-        run_row.addWidget(ShortcutGrip("supernova_hunter", self))
-        run_row.addWidget(make_help_button("supernova_asteroid_hunter", self))
         layout.addLayout(run_row)
 
         # --- Progress ---
@@ -3066,6 +3063,14 @@ class SupernovaAsteroidHunterDialog(QDialog):
         self.new_instance_button.clicked.connect(self.newInstance)
         bottom_row.addWidget(self.new_instance_button)
         layout.addLayout(bottom_row)
+        # Grip + help: their own row at the bottom
+        from setiastro.saspro.shortcuts import ShortcutGrip
+        grip_row = QHBoxLayout()
+        grip_row.setContentsMargins(0, 0, 0, 0)
+        grip_row.addWidget(ShortcutGrip("supernova_hunter", self))
+        grip_row.addStretch(1)
+        grip_row.addWidget(make_help_button("supernova_asteroid_hunter", self))
+        layout.addLayout(grip_row)
 
     def _on_adbe_toggled(self, on: bool):
         self.adbe_degree.setEnabled(on)

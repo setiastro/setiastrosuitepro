@@ -34,7 +34,7 @@ _WCS_STRUCTURAL = {
 }
 _SAVE_MUTATED_KEYS = (
     "file_path", "original_format", "bit_depth", "original_header", "fits_header",
-    "jpeg_quality",
+    "jpeg_quality", "source_roworder",
 )
 
 COMMAND_ID = "export_fits"
@@ -444,11 +444,12 @@ def export_document_as_fits(docman, doc, preset: dict | None = None) -> ExportFi
         if hasattr(doc, "metadata"):
             doc.metadata = meta
     dirty = bool(getattr(doc, "dirty", False))
+    saved_to_file = getattr(doc, "saved_to_file", None)
     restore = [(key, key in meta, meta.get(key)) for key in _SAVE_MUTATED_KEYS]
     bit_depth = meta.get("bit_depth")
 
     ext_low = ext.lower()
-    is_fits_like = ext_low in (".fits", ".fit", ".fts", ".xisf")
+    is_fits_like = ext_low in (".fits", ".fit", ".fts", ".fz", ".xisf")
     hdr = resolve_header_for_export(doc) if is_fits_like else None
     if hdr is not None:
         meta["original_header"] = hdr
@@ -487,6 +488,8 @@ def export_document_as_fits(docman, doc, preset: dict | None = None) -> ExportFi
             doc.metadata = meta
         if hasattr(doc, "dirty"):
             doc.dirty = dirty
+        if saved_to_file is not None:     # an export is a copy, not a save
+            doc.saved_to_file = saved_to_file
     return ExportFitsResult(ok=True, path=path)
 
 

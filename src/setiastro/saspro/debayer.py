@@ -569,9 +569,6 @@ class DebayerDialog(QDialog):
         self.combo_method.setCurrentIndex(0)
         hm.addWidget(self.combo_method)
         hm.addStretch(1)
-        from setiastro.saspro.shortcuts import ShortcutGrip
-        hm.addWidget(ShortcutGrip("debayer", self))
-        hm.addWidget(make_help_button("debayer", self))
         v.addWidget(self.method_group)
 
         # ── Processing: CPU or GPU, plus a way to measure which is faster ──
@@ -635,6 +632,14 @@ class DebayerDialog(QDialog):
         btn_reset.clicked.connect(self._reset_to_factory)
         btns.addButton(btn_reset, QDialogButtonBox.ButtonRole.ActionRole)
         v.addWidget(btns)
+        # Grip + help: their own row at the bottom
+        from setiastro.saspro.shortcuts import ShortcutGrip
+        grip_row = QHBoxLayout()
+        grip_row.setContentsMargins(0, 0, 0, 0)
+        grip_row.addWidget(ShortcutGrip("debayer", self))
+        grip_row.addStretch(1)
+        grip_row.addWidget(make_help_button("debayer", self))
+        v.addLayout(grip_row)
         # CPU/GPU starts on what the optimizer measured here, so Reset re-reads
         # that rather than storing it.
         self._factory = snapshot_controls(self, exclude=(self.combo_backend,))

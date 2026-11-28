@@ -17697,3 +17697,295 @@ _ADDITIONS_2026_11_26_SHORTCUT_GRIP = {
 for _ctx, _msgs in _ADDITIONS_2026_11_26_SHORTCUT_GRIP.items():
     TRANSLATIONS_SW.setdefault(_ctx, {}).update(_msgs)
 del _ctx, _msgs
+
+# 2026-11-27: Selective Color / Luminance Correction layout overhaul.
+_ADDITIONS_2026_11_27_SELECTIVE_UI = {
+    'SelectiveColorCorrection': {
+        'Chromaticity': 'Chromaticity',
+        'Lightness': "Ung'avu",
+    },
+    'SelectiveLuminanceCorrection': {
+        'Low:': 'Chini:',
+        'High:': 'Juu:',
+    },
+}
+
+for _ctx, _msgs in _ADDITIONS_2026_11_27_SELECTIVE_UI.items():
+    TRANSLATIONS_SW.setdefault(_ctx, {}).update(_msgs)
+del _ctx, _msgs
+
+# 2026-11-27: the Workflows menu is titled "Scripts & Workflows" (Scripts live in it).
+_ADDITIONS_2026_11_27_SCRIPTS_MENU = {
+    'AstroSuiteProMainWindow': {
+        'Scripts && &Workflows': 'Hati na &Mitiririko ya Kazi',
+    },
+}
+
+for _ctx, _msgs in _ADDITIONS_2026_11_27_SCRIPTS_MENU.items():
+    TRANSLATIONS_SW.setdefault(_ctx, {}).update(_msgs)
+del _ctx, _msgs
+
+# 2026-11-27: the About menu is Help on every platform; History Explorer moved into Edit.
+_ADDITIONS_2026_11_27_HELP_MENU = {
+    'FirstRunDialog': {
+        "💡 Bored? Check under the Help menu. You're welcome. 🙂": '💡 Umechoka? Angalia chini ya menyu ya Msaada. Karibu. 🙂',
+        '💡 Press F1 (Help → Documentation) to browse and search every SASpro help page.': '💡 Bonyeza F1 (Msaada → Nyaraka) kuvinjari na kutafuta kila ukurasa wa msaada wa SASpro.',
+    },
+    'SettingsDialog': {
+        'This is already being installed by the setup window. Help > Welcome and Setup shows its progress.': 'Hii tayari inasakinishwa na dirisha la usanidi. Msaada > Karibu na Usanidi huonyesha maendeleo yake.',
+    },
+    'Setup': {
+        'Close this window. Help > Welcome and Setup opens it again.': 'Funga dirisha hili. Msaada > Karibu na Usanidi hulifungua tena.',
+    },
+    'FirstStepsTour': {
+        'Ctrl+Z undoes any step, and Edit → History Explorer lists them all.\n\nA full workflow removes gradients and calibrates colour before stretching. The beginner tutorial walks through it.': 'Ctrl+Z hutendua hatua yoyote, na Hariri → Kivinjari cha Historia huziorodhesha zote.\n\nMtiririko kamili huondoa gradients na kufanya calibration ya rangi kabla ya stretch. Mafunzo ya wanaoanza yanaeleza hatua kwa hatua.',
+    },
+    'AstroSuiteProMainWindow': {
+        'Help': 'Msaada',
+    },
+}
+
+for _ctx, _msgs in _ADDITIONS_2026_11_27_HELP_MENU.items():
+    TRANSLATIONS_SW.setdefault(_ctx, {}).update(_msgs)
+del _ctx, _msgs
+
+_ADDITIONS_2026_11_27_WAVESCALE_AMOUNT = {
+    'WaveScaleHDRDialogPro': {
+        'Amount:': 'Kiasi:',
+        'Amount (0-100%)\n\nBlends the finished result with the original image. 100% is the full effect, 0% leaves the image unchanged.\n\nChanging it after a Preview re-blends the preview without recomputing. Default: 100%.': 'Kiasi (0-100%)\n\nHuchanganya matokeo ya mwisho na picha asili. 100% ni athari kamili, 0% huacha picha bila mabadiliko.\n\nUkikibadilisha baada ya Muhtasari, muhtasari huchanganywa upya bila kukokotoa tena. Chaguo-msingi: 100%.',
+    },
+    'WaveScaleDarkEnhancerDialogPro': {
+        'Amount:': 'Kiasi:',
+        'Amount (0-100%)\n\nBlends the finished result with the original image. 100% is the full effect, 0% leaves the image unchanged.\n\nChanging it after a Preview re-blends the preview without recomputing. Default: 100%.': 'Kiasi (0-100%)\n\nHuchanganya matokeo ya mwisho na picha asili. 100% ni athari kamili, 0% huacha picha bila mabadiliko.\n\nUkikibadilisha baada ya Muhtasari, muhtasari huchanganywa upya bila kukokotoa tena. Chaguo-msingi: 100%.',
+    },
+    'WaveScaleHDRPresetDialog': {
+        'Amount:': 'Kiasi:',
+        'Blend with the original image: 100% is the full effect, 0% leaves it unchanged.': 'Changanya na picha asili: 100% ni athari kamili, 0% huiacha bila mabadiliko.',
+    },
+    'WaveScaleDSEPresetDialog': {
+        'Amount:': 'Kiasi:',
+        'Blend with the original image: 100% is the full effect, 0% leaves it unchanged.': 'Changanya na picha asili: 100% ni athari kamili, 0% huiacha bila mabadiliko.',
+    },
+}
+
+for _ctx, _msgs in _ADDITIONS_2026_11_27_WAVESCALE_AMOUNT.items():
+    TRANSLATIONS_SW.setdefault(_ctx, {}).update(_msgs)
+del _ctx, _msgs
+
+_ADDITIONS_2026_11_27_VARIABLE_STARS = {
+    'ExoPlanetWindow': {
+        'Variable Stars & Exoplanets': 'Nyota Zinazobadilika na Exoplanet',
+        'Calibrated Subs': 'Subs Zilizorekebishwa',
+        'Load Frames': 'Pakia Fremu',
+        'Frames already loaded: {0}\nNew frames selected: {1}': 'Fremu zilizopakiwa tayari: {0}\nFremu mpya zilizochaguliwa: {1}',
+        'Add': 'Ongeza',
+        'Replace': 'Badilisha',
+        'Select Calibrated Frames': 'Chagua Fremu Zilizorekebishwa',
+        'Fold at:': 'Kunja kwa:',
+        'Lomb-Scargle peak': 'Kilele cha Lomb-Scargle',
+        '2 × Lomb-Scargle peak': '2 × kilele cha Lomb-Scargle',
+        'BLS period': 'Kipindi cha BLS',
+        '2 × BLS period': '2 × kipindi cha BLS',
+        'Custom': 'Maalum',
+        'Period:': 'Kipindi:',
+        'Detrended': 'Imefanyiwa detrend',
+        'Phase (0 = minimum light)': 'Awamu (0 = mwanga wa chini kabisa)',
+        'No usable points to fold.': 'Hakuna nukta zinazofaa kukunja.',
+        'data': 'data',
+        'phase bins (0.02)': 'mapipa ya awamu (0.02)',
+        '{0} — folded at P = {1:.6f} d': '{0} — imekunjwa kwa P = {1:.6f} d',
+        'Variable Star Fold': 'Mkunjo wa Nyota Inayobadilika',
+        'Add the new frames to the loaded ones (another night, or another folder), or replace them?': 'Ongeza fremu mpya kwenye zilizopakiwa (usiku mwingine, au folda nyingine), au uzibadilishe?',
+        "Period to fold at.  Lomb-Scargle suits smooth variation (pulsating\nstars); BLS suits eclipses.  An EW binary's two minima put both at\nhalf its period: use the 2 × choices.  Type a period for Custom.": 'Kipindi cha kukunja.  Lomb-Scargle inafaa mabadiliko laini (nyota\nzinazopiga); BLS inafaa kupatwa.  Viwango viwili vya chini vya binary ya EW huweka vyote\nkwenye nusu ya kipindi chake: tumia chaguo za 2 ×.  Andika kipindi kwa Maalum.',
+        "Off: the differential flux before detrending, every night at its own\nlevel.  A trend fit can take part of a slow variation with it.\nOn: the curve with the main window's Detrend applied, which also\ndivides out the step at a meridian flip.": 'Imezimwa: flux tofautishi kabla ya detrend, kila usiku kwenye kiwango\nchake.  Ulinganishaji wa mwelekeo unaweza kuondoa sehemu ya mabadiliko ya polepole.\nImewashwa: light curve yenye Detrend ya dirisha kuu, ambayo pia\nhugawanya hatua kwenye meridian flip.',
+        'P = {0:.6f} d ({1:.3f} h)   Minimum light JD {2:.5f} (UTC)   Binned amplitude {3:.3f} mag   {4:.1f} cycles covered': 'P = {0:.6f} d ({1:.3f} h)   Mwanga wa chini JD {2:.5f} (UTC)   Amplitudo ya mapipa {3:.3f} mag   Mizunguko {4:.1f} imefunikwa',
+    },
+    'HelpSupport': {
+        'Variable Stars & Exoplanets': 'Nyota Zinazobadilika na Exoplanet',
+    },
+    'AstroSuiteProMainWindow': {
+        'Variable Stars && Exoplanets...': 'Nyota Zinazobadilika na Exoplanet...',
+        'Find variable stars and exoplanet transits in time-series subs': 'Tafuta nyota zinazobadilika na transit za exoplanet katika subs za mfululizo wa muda',
+    },
+    'ToolbarMixin': {
+        'Variable Stars && Exoplanets...': 'Nyota Zinazobadilika na Exoplanet...',
+        'Find variable stars and exoplanet transits in time-series subs': 'Tafuta nyota zinazobadilika na transit za exoplanet katika subs za mfululizo wa muda',
+    },
+}
+
+for _ctx, _msgs in _ADDITIONS_2026_11_27_VARIABLE_STARS.items():
+    TRANSLATIONS_SW.setdefault(_ctx, {}).update(_msgs)
+del _ctx, _msgs
+
+# 2026-11-28: exit confirmation opt-out (exit dialog box + Preferences).
+_ADDITIONS_2026_11_28_CONFIRM_EXIT = {
+    'AstroSuiteProMainWindow': {
+        "Don't ask again unless there are unsaved images": 'Usiulize tena isipokuwa kuna picha ambazo hazijahifadhiwa',
+        'Preferences > Always ask before exiting turns it back on.': 'Mapendeleo > Uliza kila mara kabla ya kutoka huiwasha tena.',
+        'Never saved:': 'Hazijawahi kuhifadhiwa:',
+    },
+    'SettingsDialog': {
+        'Always ask before exiting': 'Uliza kila mara kabla ya kutoka',
+        'Checked, SASpro asks before it closes.\nUnchecked, it only asks when an image has unsaved edits or was\nnever saved, or an install or download is still running.': 'Ikiwa imechaguliwa, SASpro huuliza kabla ya kufunga.\nIkiwa haijachaguliwa, huuliza tu picha ikiwa na mabadiliko ambayo hayajahifadhiwa au haijawahi\nkuhifadhiwa, au usakinishaji au upakuaji bado unaendelea.',
+    },
+}
+
+for _ctx, _msgs in _ADDITIONS_2026_11_28_CONFIRM_EXIT.items():
+    TRANSLATIONS_SW.setdefault(_ctx, {}).update(_msgs)
+del _ctx, _msgs
+
+_ADDITIONS_2026_11_28_ONE_CLICK_CAL = {
+    'SFCCDialog': {
+        'Optical Chain': 'Mnyororo wa Optiki',
+        'Options': 'Chaguo',
+        'Calibrate': 'Fanya Calibration',
+        'Light-pollution or UV/IR-cut filters in the light path, if any.': 'Vichujio vya uchafuzi wa mwanga au UV/IR-cut kwenye njia ya mwanga, kama vipo.',
+        'Also make the sky background neutral grey after calibrating.': 'Pia fanya mandharinyuma ya anga kuwa kijivu kisichoegemea baada ya calibration.',
+        "The camera's sensor (its QE curve).": 'Sensa ya kamera (mkunjo wake wa QE).',
+        'Plot the filter, sensor and star curves against each other.': 'Chora mikunjo ya vichujio, sensa na nyota pamoja.',
+        'The star that should come out white. G2V (the Sun) is the usual choice;\nan average spiral galaxy is close to it.': 'Nyota inayopaswa kuonekana nyeupe. G2V (Jua) ndiyo chaguo la kawaida;\ngalaksi ya ond ya wastani iko karibu nayo.',
+        'Calibrates the colour of the active view from the spectra of the stars in it. It needs a plate solution and offers to make one.': 'Husawazisha rangi ya mwonekano amilifu kutokana na spectra za nyota zilizomo. Inahitaji plate solve na itajitolea kuifanya.',
+        'Find the stars, look up their spectra, measure them and correct the colour\nof the active view, all in one go.': 'Tafuta nyota, tafuta spectra zao, zipime na urekebishe rangi\nya mwonekano amilifu, yote kwa mara moja.',
+        '<b>Calibrated</b> with {0} stars ({1} Gaia XP spectra, {2} Pickles templates) in {3:.1f} s.<br>Model: {4} · R ratio @ x=1: {5:.4f} · B ratio @ x=1: {6:.4f}': '<b>Imesawazishwa</b> kwa nyota {0} (spectra {1} za Gaia XP, templates {2} za Pickles) kwa s {3:.1f}.<br>Modeli: {4} · Uwiano wa R @ x=1: {5:.4f} · Uwiano wa B @ x=1: {6:.4f}',
+        'No Image': 'Hakuna Picha',
+        'Open an image and make it the active view first.': 'Fungua picha na uifanye mwonekano amilifu kwanza.',
+        "This image isn't plate-solved yet. Run the plate solver now?": 'Picha hii bado haijafanyiwa plate solve. Endesha plate solver sasa?',
+        'Plate Solve Error': 'Hitilafu ya Plate Solve',
+        'Plate Solve Failed': 'Plate Solve Imeshindwa',
+    },
+    'SSSCDialog': {
+        'Optical Chain': 'Mnyororo wa Optiki',
+        'Options': 'Chaguo',
+        'Calibrate': 'Fanya Calibration',
+        'Light-pollution or UV/IR-cut filters in the light path, if any.': 'Vichujio vya uchafuzi wa mwanga au UV/IR-cut kwenye njia ya mwanga, kama vipo.',
+        'Also make the sky background neutral grey after calibrating.': 'Pia fanya mandharinyuma ya anga kuwa kijivu kisichoegemea baada ya calibration.',
+        'The star that should come out white. G2V (the Sun) is the usual choice.': 'Nyota inayopaswa kuonekana nyeupe. G2V (Jua) ndiyo chaguo la kawaida.',
+        "No sensor curve: SSSC solves the sensor's response from the stars.": 'Hakuna mkunjo wa sensa: SSSC hutatua mwitikio wa sensa kutoka kwa nyota.',
+        'Session History': 'Historia ya Vipindi',
+        'Max stars:': 'Nyota za juu kabisa:',
+        "Calibrates the colour of the active view from Gaia XP star spectra, solving the sensor's response instead of assuming it. It needs a plate solution and offers to make one.": 'Husawazisha rangi ya mwonekano amilifu kutokana na spectra za nyota za Gaia XP, ikitatua mwitikio wa sensa badala ya kuukisia. Inahitaji plate solve na itajitolea kuifanya.',
+        'Find the stars, look up their spectra, measure them, solve the system\nresponse and correct the colour of the active view, all in one go.': 'Tafuta nyota, tafuta spectra zao, zipime, tatua mwitikio wa mfumo\nna urekebishe rangi ya mwonekano amilifu, yote kwa mara moja.',
+        '<b>Calibrated</b> with {0} stars ({1} Gaia XP spectra, {2} Pickles templates) in {3:.1f} s.<br>{4} · B-V {5:.2f} – {6:.2f} · residual RMS {7:.4f} · session runs {8}<br>Gains: k_R={9:.4f}  k_G={10:.4f}  k_B={11:.4f} · {12}': '<b>Imesawazishwa</b> kwa nyota {0} (spectra {1} za Gaia XP, templates {2} za Pickles) kwa s {3:.1f}.<br>{4} · B-V {5:.2f} – {6:.2f} · RMS ya mabaki {7:.4f} · mizunguko ya kipindi {8}<br>Gains: k_R={9:.4f}  k_G={10:.4f}  k_B={11:.4f} · {12}',
+    },
+}
+
+for _ctx, _msgs in _ADDITIONS_2026_11_28_ONE_CLICK_CAL.items():
+    TRANSLATIONS_SW.setdefault(_ctx, {}).update(_msgs)
+del _ctx, _msgs
+
+_ADDITIONS_2026_11_28_SSSC_STAGE3 = {
+    'SSSCDialog': {
+        '\n \n<h2>What is SSSC?</h2>\n<p>\nSSSC (Spectrophotometric Standard Star Calibration) is SetiAstro&rsquo;s next-generation\nempirical color calibration, derived directly from the photometric calibration pipeline\nused internally by the Gaia space mission (Riello et al. 2021). The same mathematical\nframework that Gaia uses to self-calibrate a billion stars is applied here to calibrate\nyour image &mdash; using Gaia&rsquo;s own XP stellar spectra as the reference standard.\n</p>\n<p>\nTraditional calibration tools require a <b>sensor QE curve</b> as input. The problem is\nthat most published QE curves are promotional material &mdash; measured at room temperature\non a bare die, often representing a best-case sample rather than an independently-verified\nresponse for your specific sensor batch. They have no knowledge of your AR coating, your\noptical train, your atmosphere, or your electronics chain. The curve you apply is rarely\nthe curve your camera actually has in practice.\n</p>\n<p>\n<b>SSSC abandons the QE curve entirely.</b> Instead, it solves for the true effective\nsystem throughput R(&lambda;) directly from your image data, using Gaia XP stellar\nspectra as calibration references. No assumptions. No datasheets. Just your actual system,\nmeasured empirically from the stars in your field.\n</p>\n \n<hr>\n \n<h2>How does it work?</h2>\n<p>\nFor each calibrator star, Gaia has measured a continuous flux spectrum from ~330&ndash;1050&nbsp;nm\nat ~2.5&nbsp;nm resolution. SSSC integrates those spectra through your filter transmission\ncurves and solves for the R(&lambda;) that best explains the difference between what Gaia\npredicts and what your camera actually measured. The core equation is:\n</p>\n<p style="margin-left:20px; font-family:monospace; color:#88ffcc;">\nmeasured<sub>c</sub>(i) = k<sub>c</sub> &times; &int; flux<sub>i</sub>(&lambda;)\n&times; T<sub>filter</sub>(&lambda;) &times; R(&lambda;) d&lambda;\n</p>\n<p>\nR(&lambda;) absorbs everything the datasheet cannot tell you: true sensor QE at\noperating temperature, mirror and lens throughput, AR coating, field flattener,\nand atmospheric extinction. Filter transmission curves remain as inputs &mdash;\nmanufacturers publish reliable interferometric measurements for these.\n</p>\n \n<hr>\n \n<h2>Bootstrap Stages</h2>\n<p>\nThe solution quality improves automatically as more calibrator stars are available.\nSSSC selects the highest stage your field supports:\n</p>\n<ul>\n  <li><span class="stage">Stage 1 (&lt;50 stars):</span>\n      Scalar per-channel gains k<sub>R</sub>, k<sub>G</sub>, k<sub>B</sub>.\n      This is equivalent to traditional scalar SPCC &mdash; a single white-balance\n      correction per channel. Always runs as the baseline.</li>\n  <li><span class="stage">Stage 2 (50&ndash;200 stars):</span>\n      Color-dependent gain within each band, fit as slope, affine, or quadratic\n      depending on which best describes your data. Captures the dominant wavelength\n      dependence within each filter passband. Comparable to SASpro&rsquo;s polynomial\n      SPCC fit, which already exceeds traditional scalar SPCC quality on most normal\n      star fields &mdash; and SSSC achieves this without any QE curve assumption at all.</li>\n  <li><span class="stage">Stage 3 (200+ stars, B&minus;V span &ge; 1.5):</span>\n      Full R(&lambda;) shape solved per channel on piecewise-linear control points\n      by an exact least-squares fit. Hot blue stars constrain the blue edge of each filter;\n      cool red stars constrain the red edge. Each run&rsquo;s solution is saved to the\n      session history, which the multi-night Stage 4 will combine.</li>\n  <li><span class="stage future">Stage 4 (future &mdash; DR4 + multi-night):</span>\n      Atmosphere/hardware decorrelation. By imaging across multiple nights at different\n      airmasses, R(&lambda;) separates into a stable hardware component and a variable\n      atmospheric component. Once converged, your empirically-measured QE curve is locked\n      in permanently &mdash; calibration collapses back to Stage 2 speed with Stage 3+\n      accuracy, using your actual curve instead of a manufacturer guess.</li>\n</ul>\n \n<hr>\n \n<h2>What can SSSC do today with Gaia DR3?</h2>\n<p>\nGaia DR3 provides continuous XP spectra for stars to about G&nbsp;&le;&nbsp;15.5.\nOn a typical wide-field image (0.5&ndash;2&deg; FOV) this yields 200&ndash;600\ncalibrator stars, comfortably in Stage 3 territory for most fields.\n</p>\n<p>\nIn testing on real data, SSSC&rsquo;s star colours match a full spectrophotometric\nstandard to within 1&ndash;2&nbsp;% without any QE curve. The residual RMS of every\nstage that ran is shown in the Calibration Quality waterfall panel on every run.\n</p>\n<p class="note">\nTip: run SSSC on images from the same rig across several nights. Each run&rsquo;s\nR(&lambda;) is saved to the session history, ready for the multi-night Stage 4.\nThe Camera&nbsp;/&nbsp;Rig label field separates history per sensor so solutions\ndon&rsquo;t mix between different imaging trains.\n</p>\n \n<hr>\n \n<h2 class="future">What will SSSC do with Gaia DR4?</h2>\n<p>\nGaia DR4 is expected to extend XP spectra to G&nbsp;&le;&nbsp;16.5, roughly\n<b>tripling the calibrator star count</b> in most fields. This means:\n</p>\n<ul>\n  <li>Fields that currently reach Stage 2 will reliably reach Stage 3</li>\n  <li>Stage 3 with 16+ control points becomes well-constrained (&gt;1000 stars)</li>\n  <li>Stage 4 atmosphere decorrelation becomes feasible &mdash; enough stars per\n      session to resolve the airmass-dependent component of R(&lambda;)</li>\n</ul>\n<p>\nThe Stage 4 endgame: once your hardware R(&lambda;) has converged from multi-night\ndata, it is saved permanently to your session cache. Every subsequent calibration\nrun loads that curve as a known input &mdash; no solver needed, Stage 2 speed,\nempirically-correct accuracy. The curve also self-maintains: mirror oxidation,\nsensor aging, filter changes all appear as drift in R(&lambda;) and trigger an update.\n</p>\n \n<hr>\n \n<h2>References</h2>\n<ul>\n  <li>Riello et al. 2021 &mdash; <i>Gaia EDR3: Photometric content and validation</i>,\n      A&amp;A 649, A3 &mdash; the calibration pipeline SSSC replicates</li>\n  <li>Carrasco et al. 2021 &mdash; <i>Gaia photometric science alerts programme</i></li>\n  <li>Fabricius et al. 2021 &mdash; <i>Gaia EDR3: Catalogue validation</i></li>\n</ul>\n<p class="note" style="margin-top:16px;">\nSSSC is part of SetiAstro Suite Pro &mdash; www.setiastro.com\n</p>\n': '\n \n<h2>SSSC ni nini?</h2>\n<p>\nSSSC (Spectrophotometric Standard Star Calibration) ni calibration ya rangi ya kizazi kijacho ya SetiAstro\ninayotegemea vipimo halisi, iliyotokana moja kwa moja na mfumo wa calibration ya photometric\nunaotumiwa ndani na misheni ya anga ya Gaia (Riello et al. 2021). Mfumo uleule wa kihisabati\nambao Gaia hutumia kujicalibrate kwa nyota bilioni moja unatumika hapa kucalibrate\npicha yako &mdash; ukitumia spectra za nyota za XP za Gaia yenyewe kama kiwango cha marejeo.\n</p>\n<p>\nZana za kawaida za calibration zinahitaji <b>curve ya QE ya sensa</b> kama ingizo. Tatizo ni\nkwamba curves nyingi za QE zilizochapishwa ni nyenzo za matangazo &mdash; zimepimwa kwenye joto la chumba\nkwenye die tupu, mara nyingi zikiwakilisha sampuli bora kabisa badala ya mwitikio uliothibitishwa kwa kujitegemea\nkwa kundi lako mahususi la sensa. Hazijui chochote kuhusu AR coating yako,\noptical train yako, angahewa lako, wala mnyororo wako wa kielektroniki. Curve unayotumia mara chache\nhuwa ndiyo curve ambayo kamera yako inayo kwa vitendo.\n</p>\n<p>\n<b>SSSC inaacha curve ya QE kabisa.</b> Badala yake, inakokotoa throughput halisi inayofaa\nya mfumo R(&lambda;) moja kwa moja kutoka kwa data ya picha yako, ikitumia spectra za nyota za Gaia XP\nkama marejeo ya calibration. Hakuna dhana. Hakuna datasheets. Mfumo wako halisi tu,\nuliopimwa kwa majaribio kutoka kwa nyota zilizo kwenye uga wako.\n</p>\n \n<hr>\n \n<h2>Inafanyaje kazi?</h2>\n<p>\nKwa kila nyota ya calibration, Gaia imepima spectrum endelevu ya flux kutoka ~330&ndash;1050&nbsp;nm\nkwa resolution ya ~2.5&nbsp;nm. SSSC huunganisha spectra hizo kupitia curves za upitishaji za vichujio vyako\nna kukokotoa R(&lambda;) inayoeleza vyema tofauti kati ya kile Gaia\ninachotabiri na kile kamera yako ilichopima kwa kweli. Mlinganyo mkuu ni:\n</p>\n<p style="margin-left:20px; font-family:monospace; color:#88ffcc;">\nmeasured<sub>c</sub>(i) = k<sub>c</sub> &times; &int; flux<sub>i</sub>(&lambda;)\n&times; T<sub>filter</sub>(&lambda;) &times; R(&lambda;) d&lambda;\n</p>\n<p>\nR(&lambda;) hufyonza kila kitu ambacho datasheet haiwezi kukuambia: QE halisi ya sensa kwenye\njoto la uendeshaji, throughput ya kioo na lenzi, AR coating, field flattener,\nna extinction ya angahewa. Curves za upitishaji za vichujio hubaki kama maingizo &mdash;\nwatengenezaji huchapisha vipimo vya interferometric vinavyoaminika kwa hivi.\n</p>\n \n<hr>\n \n<h2>Hatua za Bootstrap</h2>\n<p>\nUbora wa suluhisho huboreka kiotomatiki kadiri nyota zaidi za calibration zinavyopatikana.\nSSSC huchagua hatua ya juu kabisa ambayo uga wako unaiwezesha:\n</p>\n<ul>\n  <li><span class="stage">Hatua ya 1 (nyota &lt;50):</span>\n      Gains za scalar kwa kila chaneli k<sub>R</sub>, k<sub>G</sub>, k<sub>B</sub>.\n      Hii ni sawa na SPCC ya kawaida ya scalar &mdash; usahihishaji mmoja wa usawa mweupe\n      kwa kila chaneli. Huendeshwa kila mara kama msingi.</li>\n  <li><span class="stage">Hatua ya 2 (nyota 50&ndash;200):</span>\n      Gain inayotegemea rangi ndani ya kila bendi, inayolinganishwa kama mteremko, affine, au quadratic\n      kulingana na ipi inayoeleza data yako vyema. Hunasa utegemezi mkuu wa urefu wa wimbi\n      ndani ya kila passband ya kichujio. Inalinganishwa na fit ya polynomial ya SPCC ya SASpro,\n      ambayo tayari inazidi ubora wa SPCC ya kawaida ya scalar kwenye uga mwingi wa kawaida\n      wa nyota &mdash; na SSSC inafanikisha hili bila dhana yoyote ya curve ya QE.</li>\n  <li><span class="stage">Hatua ya 3 (nyota 200+, upana wa B&minus;V &ge; 1.5):</span>\n      Umbo kamili la R(&lambda;) hukokotolewa kwa kila chaneli kwenye pointi za udhibiti za piecewise-linear kwa fit kamili ya least-squares. Nyota za bluu zenye joto hudhibiti ukingo wa bluu wa kila kichujio; nyota nyekundu baridi hudhibiti ukingo wa nyekundu. Suluhisho la kila uendeshaji huhifadhiwa kwenye historia ya kipindi, ambayo Hatua ya 4 ya usiku mingi itaiunganisha.</li>\n  <li><span class="stage future">Hatua ya 4 (baadaye &mdash; DR4 + usiku mingi):</span>\n      Kutenganisha angahewa/vifaa. Kwa kupiga picha katika usiku mingi kwenye\n      airmasses tofauti, R(&lambda;) hujitenga kuwa sehemu thabiti ya vifaa na sehemu inayobadilika\n      ya angahewa. Ikishatulia, curve yako ya QE iliyopimwa kwa majaribio hufungwa\n      kwa kudumu &mdash; calibration hurudi kwenye kasi ya Hatua ya 2 kwa usahihi wa Hatua ya 3+,\n      ukitumia curve yako halisi badala ya makisio ya mtengenezaji.</li>\n</ul>\n \n<hr>\n \n<h2>SSSC inaweza kufanya nini leo na Gaia DR3?</h2>\n<p>\nGaia DR3 hutoa spectra endelevu za XP kwa nyota hadi takriban G&nbsp;&le;&nbsp;15.5.\nKwenye picha ya kawaida ya uga mpana (0.5&ndash;2&deg; FOV) hii hutoa nyota 200&ndash;600\nza calibration, kwa urahisi katika eneo la Hatua ya 3 kwa uga mwingi.\n</p>\n<p>\nKatika majaribio kwenye data halisi, rangi za nyota za SSSC zinalingana na kiwango kamili cha spectrophotometric ndani ya 1&ndash;2&nbsp;% bila curve yoyote ya QE. RMS ya mabaki ya kila hatua iliyoendeshwa inaonyeshwa kwenye paneli ya waterfall ya Ubora wa Calibration kila unapoendesha.\n</p>\n<p class="note">\nKidokezo: endesha SSSC kwenye picha za kifaa kilekile kwa usiku kadhaa. R(&lambda;) ya kila uendeshaji huhifadhiwa kwenye historia ya kipindi, tayari kwa Hatua ya 4 ya usiku mingi. Sehemu ya lebo ya Kamera&nbsp;/&nbsp;Kifaa hutenganisha historia kwa kila sensa ili suluhisho zisichanganyike kati ya imaging trains tofauti.\n</p>\n \n<hr>\n \n<h2 class="future">SSSC itafanya nini na Gaia DR4?</h2>\n<p>\nGaia DR4 inatarajiwa kupanua spectra za XP hadi G&nbsp;&le;&nbsp;16.5, takriban\n<b>ikiongeza mara tatu idadi ya nyota za calibration</b> kwenye uga mwingi. Hii inamaanisha:\n</p>\n<ul>\n  <li>Uga ambao kwa sasa hufikia Hatua ya 2 utafikia Hatua ya 3 kwa uhakika</li>\n  <li>Hatua ya 3 yenye pointi 16+ za udhibiti inadhibitiwa vyema (nyota &gt;1000)</li>\n  <li>Utenganishaji wa angahewa wa Hatua ya 4 unawezekana &mdash; nyota za kutosha kwa kila\n      kipindi kutatua sehemu ya R(&lambda;) inayotegemea airmass</li>\n</ul>\n<p>\nLengo la mwisho la Hatua ya 4: mara R(&lambda;) ya vifaa vyako inapotulia kutoka kwa data ya usiku mingi,\nhuhifadhiwa kwa kudumu kwenye cache ya vipindi vyako. Kila uendeshaji wa calibration unaofuata\nhupakia curve hiyo kama ingizo linalojulikana &mdash; hakuna solver inayohitajika, kasi ya Hatua ya 2,\nusahihi uliothibitishwa kwa majaribio. Curve pia hujitunza yenyewe: oksidi kwenye kioo,\nkuzeeka kwa sensa, na mabadiliko ya vichujio vyote huonekana kama mteremko katika R(&lambda;) na kuanzisha sasisho.\n</p>\n \n<hr>\n \n<h2>Marejeo</h2>\n<ul>\n  <li>Riello et al. 2021 &mdash; <i>Gaia EDR3: Photometric content and validation</i>,\n      A&amp;A 649, A3 &mdash; mfumo wa calibration ambao SSSC inaunakili</li>\n  <li>Carrasco et al. 2021 &mdash; <i>Gaia photometric science alerts programme</i></li>\n  <li>Fabricius et al. 2021 &mdash; <i>Gaia EDR3: Catalogue validation</i></li>\n</ul>\n<p class="note" style="margin-top:16px;">\nSSSC ni sehemu ya SetiAstro Suite Pro &mdash; www.setiastro.com\n</p>\n',
+        '  ✓ Stage 3 (full R(λ)) solved from {0} stars.\n  Saved to the session history of this filter+camera combination.': '  ✓ Hatua ya 3 (R(λ) kamili) imekokotolewa kutoka kwa nyota {0}.\n  Imehifadhiwa kwenye historia ya kipindi ya mchanganyiko huu wa kichujio+kamera.',
+        'The stars do not follow these filter curves well (scalar fit residual {0:.0%}). Check the filters chosen: an OSC camera behind a UV/IR cut needs the UV/IR-cut curves, or the cut filter as LP/Cut.': 'Nyota hazifuati vizuri curve hizi za vichujio (mabaki ya fit ya scalar {0:.0%}). Kagua vichujio ulivyochagua: kamera ya OSC nyuma ya kichujio cha UV/IR-cut inahitaji curve za UV/IR-cut, au kichujio cha kukata kama LP/Cut.',
+    },
+}
+
+for _ctx, _msgs in _ADDITIONS_2026_11_28_SSSC_STAGE3.items():
+    TRANSLATIONS_SW.setdefault(_ctx, {}).update(_msgs)
+del _ctx, _msgs
+
+_ADDITIONS_2026_11_28_CALIBRATED_STATE = {
+    'SFCCDialog': {
+        'Calibrated ✓': 'Imesawazishwa ✓',
+        'Applied to this image. It turns back into Calibrate when you change a setting,\nswitch to another image or undo.': 'Imetumika kwenye picha hii. Inarudi kuwa “Fanya Calibration” unapobadilisha mpangilio,\nunapohamia picha nyingine au unapotendua.',
+    },
+    'SSSCDialog': {
+        'Calibrated ✓': 'Imesawazishwa ✓',
+        'Applied to this image. It turns back into Calibrate when you change a setting,\nswitch to another image or undo.': 'Imetumika kwenye picha hii. Inarudi kuwa “Fanya Calibration” unapobadilisha mpangilio,\nunapohamia picha nyingine au unapotendua.',
+    },
+}
+
+for _ctx, _msgs in _ADDITIONS_2026_11_28_CALIBRATED_STATE.items():
+    TRANSLATIONS_SW.setdefault(_ctx, {}).update(_msgs)
+del _ctx, _msgs
+
+_ADDITIONS_2026_11_28_SSSC_HISTORY = {
+    'SSSCDialog': {
+        'Every calibration is saved under a session: the R/G/B filters, LP filters and\ncamera / rig name together. Each run is solved on its own stars; the saved\nR(λ) curves and their uncertainties are the record the multi-night Stage 4\nwill combine.': 'Kila calibration huhifadhiwa chini ya kipindi: vichujio vya R/G/B, vichujio vya LP na\njina la kamera / kifaa kwa pamoja. Kila uendeshaji hutatuliwa kwa nyota zake zenyewe;\nmikunjo ya R(λ) iliyohifadhiwa na kutokuwa na uhakika kwake ndiyo kumbukumbu ambayo Hatua ya 4\nya usiku mwingi itaunganisha.',
+        'View History…': 'Tazama Historia…',
+        'Every saved run of this session and the others: the R(λ) curves Stage 3\nmeasured, the channel gains run by run, and deleting a single bad run': 'Kila uendeshaji uliohifadhiwa wa kipindi hiki na vingine: mikunjo ya R(λ) iliyopimwa na Hatua ya 3,\ngains za chaneli kwa kila uendeshaji, na kufuta uendeshaji mmoja mbaya',
+        'Session history unavailable: {0}': 'Historia ya vipindi haipatikani: {0}',
+        'Session {0}': 'Kipindi {0}',
+        'Last: {0}  ·  Stage {1}  ·  {2} stars  ·  RMS {3}': 'Wa mwisho: {0}  ·  Hatua {1}  ·  nyota {2}  ·  RMS {3}',
+        "No runs yet: the first calibration starts this setup's history.": 'Bado hakuna uendeshaji: calibration ya kwanza inaanzisha historia ya kifaa hiki.',
+        '{0} other session(s) use these filters under a different camera name: see View History.': 'Vipindi vingine {0} vinatumia vichujio hivi chini ya jina tofauti la kamera: angalia Tazama Historia.',
+        "Name the camera / rig to keep each setup's history apart.": 'Ipe kamera / kifaa jina ili kutenganisha historia ya kila kifaa.',
+        '1 run': 'uendeshaji 1',
+        '{0} runs': 'uendeshaji {0}',
+        'nights unknown (no DATE-OBS)': 'usiku haujulikani (hakuna DATE-OBS)',
+        '1 night': 'usiku 1',
+        '{0} nights': 'usiku {0}',
+        '{0}, {1}  ·  best: Stage {2} from {3} stars': '{0}, {1}  ·  bora: Hatua {2} kutoka nyota {3}',
+        'LP: {0}': 'LP: {0}',
+    },
+    'SSSCHistoryDialog': {
+        '1 run': 'uendeshaji 1',
+        '{0} runs': 'uendeshaji {0}',
+        'nights unknown (no DATE-OBS)': 'usiku haujulikani (hakuna DATE-OBS)',
+        '1 night': 'usiku 1',
+        '{0} nights': 'usiku {0}',
+        '{0}, {1}  ·  best: Stage {2} from {3} stars': '{0}, {1}  ·  bora: Hatua {2} kutoka nyota {3}',
+        'LP: {0}': 'LP: {0}',
+        'SSSC Session History': 'Historia ya Vipindi vya SSSC',
+        'Session:': 'Kipindi:',
+        'Date': 'Tarehe',
+        'Image': 'Picha',
+        'Stage': 'Hatua',
+        'Stars': 'Nyota',
+        'B−V range': 'Kiwango cha B−V',
+        'RMS': 'RMS',
+        'White ref.': 'Rejea nyeupe',
+        'Airmass': 'Wingi wa hewa',
+        'DATE-AVG / DATE-OBS from the image header, else when the run was calibrated': 'DATE-AVG / DATE-OBS kutoka kichwa cha picha, vinginevyo wakati uendeshaji ulipofanyiwa calibration',
+        'Delete Run': 'Futa Uendeshaji',
+        "Remove the selected run(s) from this session's history": 'Ondoa uendeshaji uliochaguliwa kwenye historia ya kipindi hiki',
+        'Close': 'Funga',
+        '(current settings)': '(mipangilio ya sasa)',
+        'No runs saved for this session yet.': 'Bado hakuna uendeshaji uliohifadhiwa kwa kipindi hiki.',
+        'Select a run in the table first.': 'Chagua uendeshaji kwenye jedwali kwanza.',
+        "Delete {0} run(s) from this session's history? This cannot be undone.": 'Futa uendeshaji {0} kwenye historia ya kipindi hiki? Hili haliwezi kutenduliwa.',
+        'Error': 'Hitilafu',
+    },
+}
+
+for _ctx, _msgs in _ADDITIONS_2026_11_28_SSSC_HISTORY.items():
+    TRANSLATIONS_SW.setdefault(_ctx, {}).update(_msgs)
+del _ctx, _msgs
+
+# 2026-11-28: FITS row order dropdown (Save As / Export options).
+_ADDITIONS_2026_11_28_FITS_ROW_ORDER = {
+    'ExportOptionsPanel': {
+        'FITS options': 'Chaguo za FITS',
+        'Same as source file': 'Kama faili chanzo',
+        'Same as source file (bottom-up)': 'Kama faili chanzo (chini kwenda juu)',
+        'Same as source file (top-down)': 'Kama faili chanzo (juu kwenda chini)',
+        'Top-down': 'Juu kwenda chini',
+        'Bottom-up': 'Chini kwenda juu',
+        "The order the image rows are stored in. SASpro and PixInsight read both,\nusing the ROWORDER keyword. Siril shows top-down files upside down, so\nuse Bottom-up for files going to Siril.\nSame as source file: bottom-up when the image came from a bottom-up\nFITS (Siril's own files), top-down otherwise.": 'Mpangilio ambao safu za picha huhifadhiwa. SASpro na PixInsight husoma zote mbili\nkwa neno kuu ROWORDER. Siril huonyesha faili za juu kwenda chini zikiwa zimepinduka,\nkwa hivyo tumia Chini kwenda juu kwa faili zinazokwenda Siril.\nKama faili chanzo: chini kwenda juu picha ikitoka kwenye FITS ya chini kwenda juu\n(faili za Siril zenyewe), vinginevyo juu kwenda chini.',
+        'Row order': 'Mpangilio wa safu',
+    },
+}
+
+for _ctx, _msgs in _ADDITIONS_2026_11_28_FITS_ROW_ORDER.items():
+    TRANSLATIONS_SW.setdefault(_ctx, {}).update(_msgs)
+del _ctx, _msgs
+
+# 2026-11-28: master darks split by capture-date gap (Darks tab + dark picks).
+_ADDITIONS_2026_11_28_DARK_DATE_GAP = {
+    'StackingSuiteDialog': {
+        'New master after a gap of:': 'Master mpya baada ya pengo la:',
+        ' days': ' siku',
+        'every night': 'kila usiku',
+        'Darks with the same exposure, temperature, gain and offset make one master\nuntil there is a gap of more than this many days between the nights they\nwere shot. A dark library shot over a few nights stays one master; darks\nfrom other months or years become separate masters, and each light uses\nthe master nearest its own date.\nEvery night: one master per night. Darks with no date combine as before.': 'Dark zenye mfiduo, joto, gain na offset sawa huunda master moja\nhadi kuwe na pengo la zaidi ya siku hizi kati ya usiku zilipopigwa.\nMaktaba ya dark iliyopigwa kwa usiku chache hubaki master moja; dark za\nmiezi au miaka mingine huwa master tofauti, na kila light hutumia master\niliyo karibu zaidi na tarehe yake.\nKila usiku: master moja kwa kila usiku. Dark zisizo na tarehe huunganishwa kama awali.',
+        "Shared session-detection toggle (also affects Lights and Flats).\nDarks don't use sessions: they combine by exposure, image size,\ntemperature, gain and offset, and split only by 'New master after\na gap of', so this setting does not change how darks are combined.": 'Swichi ya pamoja ya kutambua kipindi (huathiri pia Lights na Flats).\nDark hazitumii vipindi: huunganishwa kwa mfiduo, ukubwa wa picha, joto, gain na\noffset, na hutenganishwa tu na "Master mpya baada ya pengo la", kwa hivyo\nmpangilio huu haubadilishi jinsi dark zinavyounganishwa.',
+        '⚠ darks from {0}, {1} days from these frames': '⚠ dark za {0}, siku {1} kutoka fremu hizi',
+        "Auto picks by size, then gain, exposure, date and temperature. Each flat group's Dark row shows its pick: choose another master, or None, there.": 'Otomatiki huchagua kwa ukubwa, kisha gain, mfiduo, tarehe na joto. Safu ya Dark ya kila kikundi cha flat inaonyesha chaguo lake: chagua hapo master nyingine, au Hakuna.',
+        'Auto picks by size, then gain, exposure, date and temperature. Pick another master, or None, for this group only. Right-click frames to give them their own.': 'Otomatiki huchagua kwa ukubwa, kisha gain, mfiduo, tarehe na joto. Chagua master nyingine, au Hakuna, kwa kikundi hiki tu. Bofya kulia fremu ili kuzipa zao wenyewe.',
+        'Auto picks by size, then gain, exposure, date and temperature. Pick another master, or None, for this group only.': 'Otomatiki huchagua kwa ukubwa, kisha gain, mfiduo, tarehe na joto. Chagua master nyingine, au Hakuna, kwa kikundi hiki tu.',
+    },
+}
+
+for _ctx, _msgs in _ADDITIONS_2026_11_28_DARK_DATE_GAP.items():
+    TRANSLATIONS_SW.setdefault(_ctx, {}).update(_msgs)
+del _ctx, _msgs

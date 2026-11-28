@@ -603,15 +603,72 @@ def _lab_chunk_rows(arr: np.ndarray) -> int:
     return max(1, _LAB_CHUNK_PX // max(1, arr.shape[1]))
 
 
+# numpy fallback = the numba kernels (legacy/numba_utils) step for step: RGB is
+# taken as LINEAR (sRGB primaries, D65, no transfer curve), XYZ in float32, the
+# Lab non-linearity in float64 with the white as plain floats. The fallback used
+# to apply the sRGB curve, so without numba every WaveScale result looked
+# different (grey 0.5 -> L* 53 instead of 76).
+_LAB_DELTA = 6.0 / 29.0
+_XN, _YN, _ZN = 0.95047, 1.00000, 1.08883
+
+
+def _rgb_to_lab_np(rgb: np.ndarray) -> np.ndarray:
+    M = _RGB_TO_XYZ_MATRIX
+    r, g, b = rgb[..., 0], rgb[..., 1], rgb[..., 2]
+    d = _LAB_DELTA
+
+    def f(t):
+        return np.where(t > d ** 3, np.cbrt(t), t / (3.0 * d * d) + 4.0 / 29.0)
+
+    fx = f((M[0, 0] * r + M[0, 1] * g + M[0, 2] * b).astype(np.float64) / _XN)
+    fy = f((M[1, 0] * r + M[1, 1] * g + M[1, 2] * b).astype(np.float64) / _YN)
+    fz = f((M[2, 0] * r + M[2, 1] * g + M[2, 2] * b).astype(np.float64) / _ZN)
+    out = np.empty(rgb.shape[:-1] + (3,), dtype=np.float32)
+    out[..., 0] = 116.0 * fy - 16.0
+    out[..., 1] = 500.0 * (fx - fy)
+    out[..., 2] = 200.0 * (fy - fz)
+    return out
+
+
+def _lab_to_rgb_np(lab: np.ndarray) -> np.ndarray:
+    d = _LAB_DELTA
+    fy = (lab[..., 0].astype(np.float64) + 16.0) / 116.0
+    fx = fy + lab[..., 1].astype(np.float64) / 500.0
+    fz = fy - lab[..., 2].astype(np.float64) / 200.0
+
+    def finv(t):
+        return np.where(t > d, t * t * t, 3.0 * d * d * (t - 4.0 / 29.0))
+
+    X = (_XN * finv(fx)).astype(np.float32)
+    Y = (_YN * finv(fy)).astype(np.float32)
+    Z = (_ZN * finv(fz)).astype(np.float32)
+    M = _XYZ_TO_RGB_MATRIX
+    out = np.empty(lab.shape[:-1] + (3,), dtype=np.float32)
+    for c in range(3):
+        np.clip(M[c, 0] * X + M[c, 1] * Y + M[c, 2] * Z, 0.0, 1.0, out=out[..., c])
+    return out
+
+
+def _lab_np_chunked(fn, arr: np.ndarray) -> np.ndarray:
+    """fn on row chunks (bounded float64 temporaries on big images)."""
+    if arr.ndim != 3:
+        return fn(arr)
+    out = np.empty(arr.shape[:2] + (3,), dtype=np.float32)
+    step = _lab_chunk_rows(arr)
+    for y0 in range(0, arr.shape[0], step):
+        out[y0:y0 + step] = fn(arr[y0:y0 + step])
+    return out
+
+
 def rgb_to_lab(rgb: np.ndarray) -> np.ndarray:
     """
-    Convert sRGB image to CIE L*a*b* color space.
-    
-    Uses Numba-accelerated version if available.
-    
+    Convert an RGB image to CIE L*a*b*. RGB is taken as linear (sRGB primaries,
+    D65 white, no transfer curve), in both the numba path and the numpy
+    fallback, which match to float32 rounding.
+
     Args:
         rgb: RGB image (H, W, 3) float32 in [0, 1]
-        
+
     Returns:
         Lab image (H, W, 3) where L is [0, 100], a/b are roughly [-128, 127]
     """
@@ -625,43 +682,18 @@ def rgb_to_lab(rgb: np.ndarray) -> np.ndarray:
             lab[y0:y0 + step] = xyz_to_lab_numba(rgb_to_xyz_numba(rgb32[y0:y0 + step]))
         return lab
     
-    # Numpy fallback
-    rgb = np.asarray(rgb, dtype=np.float32)
-    
-    # sRGB gamma linearization
-    linear = np.where(rgb > 0.04045, 
-                      np.power((rgb + 0.055) / 1.055, 2.4),
-                      rgb / 12.92)
-    
-    # RGB -> XYZ
-    xyz = np.einsum('ij,...j->...i', _RGB_TO_XYZ_MATRIX, linear)
-    
-    # XYZ -> Lab
-    xyz_n = xyz / _D65_WHITE
-    
-    def f(t):
-        return np.where(t > 0.008856, 
-                       np.power(t, 1/3), 
-                       7.787 * t + 16/116)
-    
-    fx, fy, fz = f(xyz_n[..., 0]), f(xyz_n[..., 1]), f(xyz_n[..., 2])
-    
-    L = 116 * fy - 16
-    a = 500 * (fx - fy)
-    b = 200 * (fy - fz)
-    
-    return np.stack([L, a, b], axis=-1).astype(np.float32)
+    # numpy fallback: the same arithmetic as the numba kernels
+    return _lab_np_chunked(_rgb_to_lab_np, np.asarray(rgb, dtype=np.float32))
 
 
 def lab_to_rgb(lab: np.ndarray) -> np.ndarray:
     """
-    Convert CIE L*a*b* image to sRGB color space.
-    
-    Uses Numba-accelerated version if available.
-    
+    Convert CIE L*a*b* back to linear RGB (the inverse of rgb_to_lab), clipped
+    to [0, 1]. Numba path and numpy fallback match to float32 rounding.
+
     Args:
         lab: Lab image (H, W, 3)
-        
+
     Returns:
         RGB image (H, W, 3) float32 in [0, 1]
     """
@@ -676,28 +708,5 @@ def lab_to_rgb(lab: np.ndarray) -> np.ndarray:
             np.clip(part, 0.0, 1.0, out=rgb[y0:y0 + step])
         return rgb
     
-    # Numpy fallback
-    lab = np.asarray(lab, dtype=np.float32)
-    L, a, b = lab[..., 0], lab[..., 1], lab[..., 2]
-    
-    # Lab -> XYZ
-    fy = (L + 16) / 116
-    fx = a / 500 + fy
-    fz = fy - b / 200
-    
-    def f_inv(t):
-        return np.where(t > 0.206893,
-                       np.power(t, 3),
-                       (t - 16/116) / 7.787)
-    
-    xyz = np.stack([f_inv(fx), f_inv(fy), f_inv(fz)], axis=-1) * _D65_WHITE
-    
-    # XYZ -> linear RGB
-    linear = np.einsum('ij,...j->...i', _XYZ_TO_RGB_MATRIX, xyz)
-    
-    # sRGB gamma correction
-    rgb = np.where(linear > 0.0031308,
-                   1.055 * np.power(np.maximum(linear, 0), 1/2.4) - 0.055,
-                   12.92 * linear)
-    
-    return np.clip(rgb, 0.0, 1.0).astype(np.float32)
+    # numpy fallback: the same arithmetic as the numba kernels
+    return _lab_np_chunked(_lab_to_rgb_np, np.asarray(lab, dtype=np.float32))

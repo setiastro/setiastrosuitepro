@@ -41,6 +41,11 @@ _BIT_DEPTHS = {
 
 _TIFF_COMP = ["None", "LZW", "ZIP (Deflate)"]
 
+# FITS row order choices (state / export_opts values). "source" = the
+# document's own: bottom-up when it came from a bottom-up FITS (Siril's).
+ROW_ORDER_SOURCE = "source"
+_ROW_ORDERS = (ROW_ORDER_SOURCE, "top-down", "bottom-up")
+
 
 def _norm_ext(target_ext: str) -> str:
     raw_ext = (target_ext or "").lower().strip()
@@ -92,6 +97,12 @@ def export_opts_from_state(target_ext: str, st: Dict[str, Any]) -> Dict[str, Any
         opts["dpi"] = int(st.get("dpi", 300))
         opts["tiff_compression"] = _tiff_comp_value(st.get("tiff_comp", "LZW"))
 
+    # FITS (.fit / .fits / .fts / .fz). Absent = the document's own row order.
+    if ext == "fits":
+        ro = str(st.get("fits_row_order") or ROW_ORDER_SOURCE).strip().lower()
+        if ro in ("top-down", "bottom-up"):
+            opts["fits_row_order"] = ro
+
     # Resize
     mode = str(st.get("resize_mode") or "none")
     if mode == "percent":
@@ -132,6 +143,12 @@ class ExportOptionsPanel(QWidget):
 
     `keep_depth_option=True` adds a leading "Same as document" bit depth
     (selected_bit_depth() then returns None for it).
+
+    `source_bottom_up`: how the one document being saved stores its rows,
+    shown on the "Same as source file" row order. None when the panel may
+    save several documents (Checkpoint / Export).
+    `row_order_option=False` hides the row order for writers that ignore it
+    (FITS bundles).
     """
     def __init__(
         self,
@@ -141,11 +158,14 @@ class ExportOptionsPanel(QWidget):
         *,
         settings=None,
         keep_depth_option: bool = False,
+        source_bottom_up: bool | None = None,
+        row_order_option: bool = True,
         parent=None,
     ):
         super().__init__(parent)
         self._settings = settings
         self._keep_depth = bool(keep_depth_option)
+        self._row_order_option = bool(row_order_option)
         self._ext = _norm_ext(target_ext)
 
         lay = QVBoxLayout(self)
@@ -207,8 +227,10 @@ class ExportOptionsPanel(QWidget):
         # -----------------------------
         self.panel_jpg = self._build_jpg_panel(current_jpeg_quality)
         self.panel_tif = self._build_tif_panel()
+        self.panel_fits = self._build_fits_panel(source_bottom_up)
         lay.addWidget(self.panel_jpg)
         lay.addWidget(self.panel_tif)
+        lay.addWidget(self.panel_fits)
 
         # -----------------------------
         # Resize panel (applies to all formats)
@@ -263,6 +285,29 @@ class ExportOptionsPanel(QWidget):
         self.tiff_comp_combo.setCurrentText("LZW")
         form.addRow(self.tr("Compression"), self.tiff_comp_combo)
 
+        return box
+
+    def _build_fits_panel(self, source_bottom_up: bool | None) -> QWidget:
+        box = QGroupBox(self.tr("FITS options"))
+        form = QFormLayout(box)
+
+        if source_bottom_up is None:
+            same = self.tr("Same as source file")
+        elif source_bottom_up:
+            same = self.tr("Same as source file (bottom-up)")
+        else:
+            same = self.tr("Same as source file (top-down)")
+        self.fits_row_order_combo = QComboBox(self)
+        self.fits_row_order_combo.addItem(same, ROW_ORDER_SOURCE)
+        self.fits_row_order_combo.addItem(self.tr("Top-down"), "top-down")
+        self.fits_row_order_combo.addItem(self.tr("Bottom-up"), "bottom-up")
+        self.fits_row_order_combo.setToolTip(self.tr(
+            "The order the image rows are stored in. SASpro and PixInsight read both,\n"
+            "using the ROWORDER keyword. Siril shows top-down files upside down, so\n"
+            "use Bottom-up for files going to Siril.\n"
+            "Same as source file: bottom-up when the image came from a bottom-up\n"
+            "FITS (Siril's own files), top-down otherwise."))
+        form.addRow(self.tr("Row order"), self.fits_row_order_combo)
         return box
 
     def _build_resize_panel(self) -> QWidget:
@@ -330,6 +375,7 @@ class ExportOptionsPanel(QWidget):
     def _apply_format_visibility(self):
         self.panel_jpg.setVisible(self._ext == "jpg")
         self.panel_tif.setVisible(self._ext == "tif")
+        self.panel_fits.setVisible(self._ext == "fits" and self._row_order_option)
 
     def _update_resize_enable(self):
         mode = self.resize_group.checkedId()
@@ -392,6 +438,7 @@ class ExportOptionsPanel(QWidget):
             "jpeg_quality": int(self.jpeg_quality_spin.value()),
             "dpi": int(self.tiff_dpi_spin.value()),
             "tiff_comp": self.tiff_comp_combo.currentText(),
+            "fits_row_order": self.fits_row_order_combo.currentData(),
             "resize_mode": {1: "percent", 2: "long_edge"}.get(mode, "none"),
             "resize_percent": int(self.resize_percent_spin.value()),
             "resize_long_edge": int(self.resize_long_edge_spin.value()),
@@ -427,6 +474,10 @@ class ExportOptionsPanel(QWidget):
                 idx = self.tiff_comp_combo.findText(str(st["tiff_comp"]))
                 if idx >= 0:
                     self.tiff_comp_combo.setCurrentIndex(idx)
+            if st.get("fits_row_order") in _ROW_ORDERS:
+                idx = self.fits_row_order_combo.findData(st["fits_row_order"])
+                if idx >= 0:
+                    self.fits_row_order_combo.setCurrentIndex(idx)
             mode = st.get("resize_mode")
             if mode == "percent":
                 self.rb_resize_percent.setChecked(True)
@@ -444,6 +495,8 @@ class ExportOptionsPanel(QWidget):
 
     # ------------------------------------------------------------------
     # Settings persistence (Save As remembers per-format defaults)
+    # The FITS row order is deliberately NOT remembered: it starts at "Same
+    # as source file" every time, so each image follows its own file.
     # ------------------------------------------------------------------
     def _k(self, suffix: str) -> str:
         # per-format persistence
@@ -580,6 +633,8 @@ class ExportDialog(QDialog):
         current_jpeg_quality: int | None = None,
         *,
         settings=None,   # optional QSettings for persistence
+        source_bottom_up: bool | None = None,   # see ExportOptionsPanel
+        row_order_option: bool = True,
     ):
         super().__init__(parent)
         self.setWindowTitle(self.tr("Export"))
@@ -604,7 +659,8 @@ class ExportDialog(QDialog):
         # All options (bit depth, colour, JPEG/TIFF, resize)
         self.panel = ExportOptionsPanel(
             self._ext, current_bit_depth, current_jpeg_quality,
-            settings=settings, parent=self,
+            settings=settings, source_bottom_up=source_bottom_up,
+            row_order_option=row_order_option, parent=self,
         )
         lay.addWidget(self.panel)
         # Older code reached into the dialog for these widgets.

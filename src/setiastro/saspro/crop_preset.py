@@ -142,6 +142,11 @@ def apply_crop_via_preset(mw, doc, preset: dict) -> np.ndarray:
             meta = update_wcs_after_crop(meta, M_src_to_dst=M, out_w=w_out, out_h=h_out)
     except Exception:
         pass
+    try:    # a Lunar Solver placement moves with the pixels
+        from setiastro.saspro.lunar_solver import lunar_solution_after_geometry
+        meta = lunar_solution_after_geometry(meta, M, (h_out, w_out), in_shape=np.asarray(img01).shape[:2])
+    except Exception:
+        pass
 
     # Replay marker — stamp explicitly so it overrides any stale command_id
     # copied in from doc.metadata (the convo-style leak), and carries the

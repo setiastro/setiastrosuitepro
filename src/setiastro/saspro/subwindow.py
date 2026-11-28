@@ -3369,6 +3369,19 @@ class ImageSubWindow(QWidget):
         return title or "Untitled"
 
 
+    def _file_drop_layer(self):
+        """The workspace's shortcut layer, which opens dropped image files.
+        Views used to refuse files, so dropping one on an image -- or anywhere
+        while a view filled the workspace -- did nothing."""
+        mw = self._find_main_window()
+        return getattr(getattr(mw, "shortcuts", None), "canvas", None)
+
+    def _accepts_file_drag(self, md) -> bool:
+        if not md.hasUrls():
+            return False
+        layer = self._file_drop_layer()
+        return layer is not None and layer._md_has_openable_urls(md)
+
     # accept view-state drops anywhere in the view
     def dragEnterEvent(self, ev):
         md = ev.mimeData()
@@ -3377,7 +3390,8 @@ class ImageSubWindow(QWidget):
                 or md.hasFormat(MIME_ASTROMETRY)
                 or md.hasFormat(MIME_MASK)
                 or md.hasFormat(MIME_CMD)
-                or md.hasFormat(MIME_LINKVIEW)):
+                or md.hasFormat(MIME_LINKVIEW)
+                or self._accepts_file_drag(md)):
             ev.acceptProposedAction()
         else:
             ev.ignore()
@@ -3389,7 +3403,8 @@ class ImageSubWindow(QWidget):
                 or md.hasFormat(MIME_ASTROMETRY)
                 or md.hasFormat(MIME_MASK)
                 or md.hasFormat(MIME_CMD)
-                or md.hasFormat(MIME_LINKVIEW)):
+                or md.hasFormat(MIME_LINKVIEW)
+                or self._accepts_file_drag(md)):
             ev.acceptProposedAction()
         else:
             ev.ignore()
@@ -3465,6 +3480,14 @@ class ImageSubWindow(QWidget):
             else:
                 ev.ignore()
             return
+
+        # 5) image files from Explorer / Finder: opened as new views, the same
+        #    as a drop on the empty workspace
+        if md.hasUrls():
+            layer = self._file_drop_layer()
+            if layer is not None and layer.open_dropped_files(md):
+                ev.acceptProposedAction()
+                return
 
         ev.ignore()
 

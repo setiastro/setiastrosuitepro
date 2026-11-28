@@ -258,7 +258,7 @@ class _BatchWorker(QThread):
     file_started  = pyqtSignal(int)
     file_progress = pyqtSignal(int, int, str)
     # KEY FIX: emit the array as object so GUI thread can push it to SASpro
-    file_done     = pyqtSignal(int, str, object)   # index, out_path, np.ndarray
+    file_done     = pyqtSignal(int, str, object, object)   # index, out_path, np.ndarray, diag
     file_failed   = pyqtSignal(int, str)
     all_done      = pyqtSignal()
 
@@ -333,8 +333,16 @@ class _BatchWorker(QThread):
                     break
 
                 # ── Save (file I/O only — no Qt here) ─────────────────────
+                # WinJUPOS-stamped name + capture header (planetary_metadata);
+                # the GUI-side document gets the same title from the same diag.
+                from setiastro.saspro.planetary_metadata import stack_header, stack_title
+                observation = diag.get("observation") if isinstance(diag, dict) else None
                 stem = os.path.splitext(os.path.basename(path))[0]
-                out_path = os.path.join(self._out_dir, f"{stem}_stack.tif")
+                out_path = os.path.join(self._out_dir, stack_title(observation, stem, "_stack") + ".tif")
+                try:
+                    header = stack_header(observation, diag)
+                except Exception:
+                    header = None
 
                 try:
                     from setiastro.saspro.legacy.image_manager import save_image
@@ -343,7 +351,7 @@ class _BatchWorker(QThread):
                         filename=out_path,
                         original_format="tiff",
                         bit_depth=None,
-                        original_header=None,
+                        original_header=header,
                         is_mono=(out.ndim == 2),
                         image_meta=None,
                         file_meta=None,
@@ -353,7 +361,7 @@ class _BatchWorker(QThread):
                     tifffile.imwrite(out_path, out.astype(np.float32))
 
                 # Emit array to GUI thread — _push_as_new_doc runs there, not here
-                self.file_done.emit(i, out_path, out)
+                self.file_done.emit(i, out_path, out, diag)
 
             except Exception as e:
                 self.file_failed.emit(i, f"{e}\n\n{traceback.format_exc()}")
@@ -724,11 +732,15 @@ class SERBatchDialog(QDialog):
         self.prog_file.setValue(pct)
         self.lbl_phase.setText(f"{phase}: {done}/{total} ({pct}%)")
 
-    def _on_file_done(self, i: int, out_path: str, arr: object):
+    def _on_file_done(self, i: int, out_path: str, arr: object, diag: object = None):
         item = self.lst.item(i)
         if item:
             item.setText(f"✅  {os.path.basename(self._files[i])}")
             item.setForeground(QBrush(_STATUS_COLORS[_ST_DONE]))
+
+        observation = diag.get("observation") if isinstance(diag, dict) else None
+        for line in (observation or {}).get("notes", ()):
+            self._log(f"     {line}")
 
         # Safe: this runs on the GUI thread because it's connected via signal
         try:
@@ -739,6 +751,7 @@ class SERBatchDialog(QDialog):
                 title_suffix="_stack",
                 source="Batch Planetary Stacker",
                 source_path=self._files[i],
+                diag=diag if isinstance(diag, dict) else None,
             )
         except Exception:
             pass

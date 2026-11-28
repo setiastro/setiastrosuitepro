@@ -851,14 +851,18 @@ class NarrowbandIntegrationDialog(QDialog):
         btn_row.addWidget(self.btn_apply_new)
         btn_row.addWidget(self.btn_reset)
 
-        # In-tool documentation button, flush right of Reset
         btn_row.addStretch(1)
-        self.btn_help = make_help_button("narrowband_integration", self)
-        from setiastro.saspro.shortcuts import ShortcutGrip
-        btn_row.addWidget(ShortcutGrip("narrowband_integration", self))
-        btn_row.addWidget(self.btn_help)
-
         left_outer.addLayout(btn_row)
+
+        # Grip + help: their own row at the bottom of the controls column
+        from setiastro.saspro.shortcuts import ShortcutGrip
+        self.btn_help = make_help_button("narrowband_integration", self)
+        grip_row = QHBoxLayout()
+        grip_row.setContentsMargins(0, 0, 0, 0)
+        grip_row.addWidget(ShortcutGrip("narrowband_integration", self))
+        grip_row.addStretch(1)
+        grip_row.addWidget(self.btn_help)
+        left_outer.addLayout(grip_row)
 
         # ── RIGHT PANE ─────────────────────────────────────────────────────
         right_widget = QWidget()

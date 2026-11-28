@@ -4993,9 +4993,6 @@ class ImagePeekerDialogPro(QDialog):
         self.analyze_btn = QPushButton(self.tr("Analyze"))
         analysis_row.addWidget(self.analyze_btn)
         analysis_row.addStretch(1)
-        from setiastro.saspro.shortcuts import ShortcutGrip
-        analysis_row.addWidget(ShortcutGrip("image_peeker", self))
-        analysis_row.addWidget(make_help_button("image_peeker", self))
 
         btns = QHBoxLayout(); btns.addStretch(1)
         ok_btn = QPushButton(self.tr("Save Settings && Exit")); cancel_btn = QPushButton(self.tr("Exit without Saving"))
@@ -5009,7 +5006,17 @@ class ImagePeekerDialogPro(QDialog):
         self.stats_lbl.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
 
         main = QHBoxLayout(self)
-        main.addWidget(self.params)
+        params_col = QVBoxLayout()
+        params_col.addWidget(self.params, 1)
+        # Grip + help: their own row under the parameters column
+        from setiastro.saspro.shortcuts import ShortcutGrip
+        grip_row = QHBoxLayout()
+        grip_row.setContentsMargins(0, 0, 0, 0)
+        grip_row.addWidget(ShortcutGrip("image_peeker", self))
+        grip_row.addStretch(1)
+        grip_row.addWidget(make_help_button("image_peeker", self))
+        params_col.addLayout(grip_row)
+        main.addLayout(params_col)
         right = QVBoxLayout(); right.addLayout(analysis_row); right.addWidget(self.status_lbl, 0), right.addWidget(self.preview_pane, 1); right.addWidget(self.stats_lbl, 0); right.addLayout(btns)
         main.addLayout(right, 1)
 

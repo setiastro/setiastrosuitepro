@@ -998,6 +998,15 @@ class GeometryMixin:
             except Exception as e:
                 print(f"[WCS-GEOM] WCS update failed for {step_name}: {e}")
 
+        # a Lunar Solver placement moves with the pixels (it has no celestial WCS)
+        if M_src_to_dst is not None:
+            try:
+                from setiastro.saspro.lunar_solver import lunar_solution_after_geometry
+                meta = lunar_solution_after_geometry(meta, M_src_to_dst, (out_h, out_w),
+                                                     in_shape=np.asarray(doc.image).shape[:2])
+            except Exception as e:
+                print(f"[LUNAR-GEOM] placement update failed for {step_name}: {e}")
+
         # Push the image + updated metadata back into the document
         if hasattr(doc, "apply_edit"):
             _md = {**meta, "step_name": step_name}

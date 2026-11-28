@@ -2,7 +2,7 @@
 <html>
 <head>
 <meta charset="utf-8">
-<title>Exoplanet Transit Detector</title>
+<title>Variable Stars &amp; Exoplanets</title>
 <style>
   body { background:#1b1b1b; color:#dcdcdc; font-family:"Segoe UI",sans-serif;
          font-size:13px; line-height:1.55; margin:18px; }
@@ -46,8 +46,8 @@
 </head>
 <body>
 
-<h1>Exoplanet Transit Detector</h1>
-<p class="sub">Full differential-photometry pipeline for ground-based exoplanet transit detection and variable-star monitoring — calibration, alignment, ensemble photometry, Lomb-Scargle + BLS period search, phase folding, SIMBAD/VSX identification, and AAVSO-compliant export in single or multi-band form.</p>
+<h1>Variable Stars &amp; Exoplanets</h1>
+<p class="sub">Full differential-photometry pipeline for variable-star monitoring and ground-based exoplanet transit detection — calibration, field tracking, ensemble photometry, Lomb-Scargle + BLS period search, phase folding, SIMBAD/VSX identification, and AAVSO-compliant export in single or multi-band form. (Formerly the Exoplanet Transit Detector.)</p>
 
 <div class="hero">
 <b>The amateur-to-professional bridge.</b> This is the tool for a dark-sky amateur rig running differential photometry on candidate transit events and variable stars — the detection and vetting step whose output goes to professional databases, professional follow-up, or published papers where the final publication-grade fits are done in dedicated professional astronomy tools. Load a stack of light frames (raw or already-aligned), get differentially-calibrated light curves for every star in the field, run Lomb-Scargle and Box Least Squares to search for periodic signals, phase-fold candidate transits, identify the target via SIMBAD/VSX, and — the headline feature — export it all directly to AAVSO.
@@ -75,19 +75,19 @@ The implementation does the hard parts right: a <b>three-tier photometric calibr
 
 <table>
 <tr><th>Mode</th><th>Input</th><th>Workflow</th></tr>
-<tr><td><b>Aligned Subs</b> (default)</td><td>Frames already calibrated and star-aligned (e.g. output from Stacking Suite or Star Registration)</td><td>One-click <b>Load, Measure &amp; Photometry</b> button — loads, detects stars, runs full photometry pipeline.</td></tr>
+<tr><td><b>Calibrated Subs</b> (default)</td><td>Frames already calibrated (dark + flat), registered or not — e.g. Stacking Suite's <code>Calibrated</code> or <code>Aligned_Images</code> folder. Unregistered frames are the better input: the tool tracks the field in every frame itself (§2).</td><td>One-click <b>Load, Measure &amp; Photometry</b> button — loads, detects stars, runs full photometry pipeline.</td></tr>
 <tr><td><b>Raw Subs</b></td><td>Uncalibrated raw light frames</td><td>Three-step: <b>Load Raw Subs</b> → load Master Dark / Master Flat → <b>Calibrate &amp; Align Subs</b> → <b>Measure &amp; Photometry</b>.</td></tr>
 </table>
 
-<p>Mode switching shows and hides the relevant controls. Raw mode exposes the master-dark / master-flat loaders and calibration button; aligned mode hides them because the frames are assumed already-processed.</p>
+<p>Mode switching shows and hides the relevant controls. Raw mode exposes the master-dark / master-flat loaders and calibration button; Calibrated mode hides them because the frames are already calibrated.</p>
 
 <div class="tip">
-<b>Why 2× 2 binning on load.</b> Every frame — raw or aligned — is 2×2 binned the moment it's loaded. This is a deliberate design choice: binning improves per-pixel SNR for faint comparison stars (critical for ensemble photometry), halves memory consumption on long sequences, and roughly quadruples throughput at every subsequent step with no measurable loss of positional accuracy at typical ground-based plate scales. The WCS is tracked with a <code>_wcs_bin_factor</code> so pixel-to-sky conversions apply the correct scaling regardless of whether the WCS came from a header (full-resolution) or the solver (binned).
+<b>Binning on load.</b> Every frame — raw or calibrated — is software-binned the moment it's loaded. <b>Auto</b> (the default; Settings → Software binning) picks the factor from the stars on the first frame: 1×1 when they are under 3 px FWHM, otherwise the largest of 2–4 that keeps the binned FWHM at least 2.5 px. It divides memory and time by b² and costs nothing photometrically while stars stay a few pixels wide (§2). The WCS is tracked with a <code>_wcs_bin_factor</code> so pixel-to-sky conversions apply the correct scaling regardless of whether the WCS came from a header (full-resolution) or the solver (binned).
 </div>
 
 <h2>2. Loading frames</h2>
 
-<p>Both modes present a multi-select file picker (FITS, FIT, XISF, TIFF, TIF supported). Files are read in parallel for header metadata, then sorted chronologically before loading pixel data. The time parsing hierarchy is:</p>
+<p>Both modes present a multi-select file picker (FITS, FIT, XISF, TIFF, TIF supported). A file picker shows one folder at a time, so for nights kept in separate folders load the first, then Load again: with frames already loaded you are asked whether to <b>Add</b> the new ones to them or <b>Replace</b> them. Files are read in parallel for header metadata, then sorted chronologically before loading pixel data. The time parsing hierarchy is:</p>
 
 <ol>
   <li><code>UT-OBS</code> if present (already in UTC)</li>
@@ -115,7 +115,7 @@ The implementation does the hard parts right: a <b>three-tier photometric calibr
 </ul>
 
 <div class="tip">
-<b>Which frames to load.</b> <b>Calibrated (dark + flat), unregistered frames are best</b>: the tool tracks the field itself, so nothing needs to be resampled. Measured on 412 real NGC660 frames (7 nights, Newtonian, ASI294MM):
+<b>Which frames to load.</b> <b>Calibrated (dark + flat), unregistered frames are best</b>: the tool tracks the field itself, so nothing needs to be resampled. Measured on NGC660, the author's own data set of 412 frames over 7 nights (Newtonian, ASI294MM). It is the real-data example quoted throughout this page; it is not distributed and you don't need it:
 <ul>
   <li><b>Calibrated</b> and <b>calibrated + normalised + registered</b> frames gave the same comparison-star scatter, 5.8–5.9 ppt. A per-frame normalisation scale cancels in the differential ratio, and resampling costs little in a ~1.5×FWHM aperture.</li>
   <li><b>Raw frames</b> (no flat) were clearly worse: 14 ppt, with 80–190 ppt steps across a meridian flip, because every star moves across ~20% vignetting when the field turns.</li>
@@ -171,7 +171,7 @@ The status line notes when raw or registered frames are loaded.
 
 <h2>5. Measure &amp; Photometry — the main pipeline</h2>
 
-<p>Once frames are loaded (and calibrated if raw), <b>Measure &amp; Photometry</b> runs the full detection, aperture photometry, plate-solving, and ensemble normalization pipeline. In aligned mode, <b>Load, Measure &amp; Photometry</b> combines the load and run into one click.</p>
+<p>Once frames are loaded (and calibrated if raw), <b>Measure &amp; Photometry</b> runs the full detection, aperture photometry, plate-solving, and ensemble normalization pipeline. In Calibrated mode, <b>Load, Measure &amp; Photometry</b> combines the load and run into one click.</p>
 
 <p>Progress updates stream in real-time. The pipeline:</p>
 
@@ -236,7 +236,7 @@ The status line notes when raw or registered frames are loaded.
 
 <h2>7b. Data sets spanning several nights</h2>
 
-<p>Frames are grouped into <b>observing nights</b>: local noon to local noon from the site longitude in the headers (or, without one, split at gaps longer than 6 h), and separately per telescope, since an LCO sequence can hand off between sites with no daytime gap. When there is more than one night a <b>Night</b> selector appears next to Detrend:</p>
+<p>Frames are grouped into <b>observing nights</b>: local noon to local noon from the site longitude in the headers (or, without one, split at gaps longer than 6 h), and separately per telescope, since an LCO sequence can hand off between sites with no daytime gap. Load every night's frames together, in one Load or with <b>Add</b> when the nights sit in different folders (§2); they don't need to be registered to one another, since every frame is tracked. When there is more than one night a <b>Night</b> selector appears next to Detrend:</p>
 
 <ul>
   <li><b>All nights</b> (default) — every night on one axis with the daytime gaps collapsed; dashed lines and dates mark each new night, and no line is drawn across a gap.</li>
@@ -335,11 +335,12 @@ The status line notes when raw or registered frames are loaded.
 
 <h2>13. Analyze Star — the period search</h2>
 
-<p>Select exactly one star, click <b>Analyze Star…</b>. A tabbed window opens with four panels:</p>
+<p>Select exactly one star, click <b>Analyze Star…</b>. A tabbed window opens with these panels:</p>
 
 <table>
 <tr><th>Tab</th><th>Shows</th></tr>
 <tr><td><b>Lomb-Scargle</b></td><td>LS periodogram covering frequencies from 1/T<sub>span</sub> to the Nyquist limit. Peak marked in yellow. Best for continuous variability (sine-like signals, pulsators).</td></tr>
+<tr><td><b>Variable Star Fold</b></td><td>The light curve folded at a period you choose: the Lomb-Scargle peak (default), twice it, the BLS period, twice that, or one you type (Custom). An EW binary's two minima put both periodograms at half its period, so use a 2 × choice for one. Phase 0 is minimum light and two cycles are shown, with 50 phase bins per cycle (yellow). The line above the plot gives the period in days and hours, the JD (UTC) of a minimum, the binned amplitude in magnitudes and how many cycles the data cover. By default the curve is the differential flux before detrending, every night at its own level, because a trend fit can take part of a slow variation with it; <b>Detrended</b> uses the main window's curve instead, which also divides out the step at a meridian flip.</td></tr>
 <tr><td><b>BLS Periodogram</b></td><td>Box Least Squares periodogram, whitened (running-median background subtracted) and plotted on a per-period axis. Best peak marked in red. Best for sharp transit-shaped dips.</td></tr>
 <tr><td><b>Phase Fold</b></td><td>The light curve folded at the best BLS period, in hours from mid-transit, laid out like Fit Transit: detrended points, binned means with error bars (yellow), the limb-darkened transit model (red), the BLS box (dashed) and the residuals underneath. It opens on the transit; zoom out, or click the A button, for the whole orbit.</td></tr>
 <tr><td><b>Odd / Even</b></td><td>Shown when the fold has transits at both odd and even epochs. The odd and even transits are plotted side by side on shared axes, each with the model scaled to its own depth (red) and the joint model (dashed).</td></tr>
@@ -444,7 +445,7 @@ The status line notes when raw or registered frames are loaded.
 <h2>17. Workflow recipes</h2>
 
 <div class="workflow">
-<b>Variable-star monitoring across a session.</b> A session's worth of frames of a known-variable target. Mode: Aligned (frames already through Stacking). Load, Measure &amp; Photometry → the target star shows up in the list → select it → the light curve plots → the VAR flag and the list's σ show at a glance whether it varied → run Analyze Star to get LS period → compare to AAVSO VSX historical data → Export AAVSO to contribute your night's data.
+<b>Variable-star monitoring across a session.</b> A session's worth of frames of a known-variable target. Mode: Calibrated Subs (e.g. Stacking Suite's Calibrated frames). Load, Measure &amp; Photometry → the target star shows up in the list → select it → the light curve plots → the VAR flag and the list's σ show at a glance whether it varied → run Analyze Star for the LS period and its Variable Star Fold → compare to AAVSO VSX historical data → Export AAVSO to contribute your night's data.
 </div>
 
 <div class="workflow">
@@ -456,11 +457,11 @@ The status line notes when raw or registered frames are loaded.
 </div>
 
 <div class="workflow">
-<b>Long-period transit vetting (BEEP-style workflow).</b> Multiple nights of a known candidate, from a known TESS TOI, with a predicted period and expected transit time. Combine all nights' aligned frames → Measure &amp; Photometry on the merged stack → Find Star by TOI name → Analyze Star with BLS min period set near the TESS-reported value → verify the detected period matches TESS to within the expected uncertainty → phase-fold → compare duration to TESS → Export AAVSO. This is the workflow that produced the Lynch et al. (2025) long-period gas-giant paper — the citizen-science confirmation of TIC 358943696.01 at P = 13.56 days.
+<b>Long-period transit vetting (BEEP-style workflow).</b> Multiple nights of a known candidate, from a known TESS TOI, with a predicted period and expected transit time. Load all nights' calibrated frames (Add for each further folder) → Measure &amp; Photometry on all of them → Find Star by TOI name → Analyze Star with BLS min period set near the TESS-reported value → verify the detected period matches TESS to within the expected uncertainty → phase-fold → compare duration to TESS → Export AAVSO. This is the workflow that produced the Lynch et al. (2025) long-period gas-giant paper — the citizen-science confirmation of TIC 358943696.01 at P = 13.56 days.
 </div>
 
 <div class="workflow">
-<b>Multi-band DSLR / OSC color photometry.</b> OSC imager (DSLR, color CMOS). Mode: Raw with masters, or Aligned if already processed. Load, Measure &amp; Photometry runs the per-channel R/G/B pass automatically. Select target → Export AAVSO → opt in to multi-band export → get TB + TG + TR rows in one file, calibrated against APASS Johnson B / V and Sloan r' (acting as R proxy with honest NOTES annotation). One upload = three bands.
+<b>Multi-band DSLR / OSC color photometry.</b> OSC imager (DSLR, color CMOS). Mode: Raw with masters, or Calibrated Subs if already calibrated. Load, Measure &amp; Photometry runs the per-channel R/G/B pass automatically. Select target → Export AAVSO → opt in to multi-band export → get TB + TG + TR rows in one file, calibrated against APASS Johnson B / V and Sloan r' (acting as R proxy with honest NOTES annotation). One upload = three bands.
 </div>
 
 <h2>18. Technical details</h2>
@@ -738,7 +739,7 @@ OGLE, GSC, PPM, SAO, WDS, WISE</div>
 <p>Both SEP detection (pass 1) and aperture photometry (pass 2) run in parallel across a thread pool sized to 80% of available CPU cores. SEP itself is single-threaded internally so this gives real linear speedup. Per-frame tasks are completely independent (no shared state), so there's no lock contention. On an 8-core machine, a 200-frame session processes in roughly the time it takes one frame × 32 — a 6× speedup over serial execution.</p>
 
 <div class="credit">
-<b>Credits.</b> SASpro Exoplanet Transit Detector — the three-tier AAVSO calibration cascade (ensemble ZP → single-comparison → check-star fallback) with per-tier NOTES annotation, the Sloan r' → R proxy flag for honesty on OSC multi-band exports, the SIMBAD/VSX scoring system that prefers variable-star designations over generic Gaia IDs, the XISF plate-solve re-solve policy, and the BLS whitening + multi-peak scanning + alias penalty workflow — are original work by <b>Franklin Marek</b> for SetiAstro Suite Pro. The time-series pipeline follows published methods: weighted comparison ensembles with variable rejection (Broeg, Fernández &amp; Neuhäuser 2005), pink-noise detection statistics (Pont, Zucker &amp; Queloz 2006), the time-averaging red-noise factor (Winn et al. 2008), the affine-invariant ensemble sampler (Goodman &amp; Weare 2010), quadratic limb-darkening coefficients from Claret &amp; Bloemen (2011, VizieR J/A+A/529/A75), the Kasten &amp; Young (1989) airmass formula, planet parameters from the NASA Exoplanet Archive, and the transit-fit workflow and AAVSO Exoplanet Database report layout of EXOTIC (NASA JPL Exoplanet Watch) — reimplemented independently, no EXOTIC code is used. The night-dip event detection, phase-fold binning, and BLS multi-peak merging patterns derive from Kyle Lynch's "exoplanet_ground_telescope_script" (BEEP collaboration), ported and extended for the SASpro integration. Standard components credited: SEP (Barbary 2016, Python port of Source Extractor by Bertin &amp; Arnouts 1996); astropy for WCS, Time, Lomb-Scargle, BoxLeastSquares, and SkyCoord; astroquery for SIMBAD and VSX queries; Lightkurve + MAST Tesscut for the TESS cross-reference path; APASS DR9 and UCAC4 catalogs via VizieR; and the AAVSO Extended Format specification. The Lynch, Anderson, Chaton, Fritz, Thill, Marek, Traub <i>"Detection of a Long-Period Gas-Giant Candidate With Citizen Scientists"</i> paper documenting TIC 358943696.01 (P = 13.5627 d, R<sub>p</sub> = 1.82 R<sub>Jup</sub>) is where SASpro contributes on the amateur-detection side through the Backyard Eclipsing Exoplanet Project (BEEP); the publication-grade fits in that paper are done in dedicated professional astronomy tools.
+<b>Credits.</b> SASpro Variable Stars &amp; Exoplanets — the three-tier AAVSO calibration cascade (ensemble ZP → single-comparison → check-star fallback) with per-tier NOTES annotation, the Sloan r' → R proxy flag for honesty on OSC multi-band exports, the SIMBAD/VSX scoring system that prefers variable-star designations over generic Gaia IDs, the XISF plate-solve re-solve policy, and the BLS whitening + multi-peak scanning + alias penalty workflow — are original work by <b>Franklin Marek</b> for SetiAstro Suite Pro. The time-series pipeline follows published methods: weighted comparison ensembles with variable rejection (Broeg, Fernández &amp; Neuhäuser 2005), pink-noise detection statistics (Pont, Zucker &amp; Queloz 2006), the time-averaging red-noise factor (Winn et al. 2008), the affine-invariant ensemble sampler (Goodman &amp; Weare 2010), quadratic limb-darkening coefficients from Claret &amp; Bloemen (2011, VizieR J/A+A/529/A75), the Kasten &amp; Young (1989) airmass formula, planet parameters from the NASA Exoplanet Archive, and the transit-fit workflow and AAVSO Exoplanet Database report layout of EXOTIC (NASA JPL Exoplanet Watch) — reimplemented independently, no EXOTIC code is used. The night-dip event detection, phase-fold binning, and BLS multi-peak merging patterns derive from Kyle Lynch's "exoplanet_ground_telescope_script" (BEEP collaboration), ported and extended for the SASpro integration. Standard components credited: SEP (Barbary 2016, Python port of Source Extractor by Bertin &amp; Arnouts 1996); astropy for WCS, Time, Lomb-Scargle, BoxLeastSquares, and SkyCoord; astroquery for SIMBAD and VSX queries; Lightkurve + MAST Tesscut for the TESS cross-reference path; APASS DR9 and UCAC4 catalogs via VizieR; and the AAVSO Extended Format specification. The Lynch, Anderson, Chaton, Fritz, Thill, Marek, Traub <i>"Detection of a Long-Period Gas-Giant Candidate With Citizen Scientists"</i> paper documenting TIC 358943696.01 (P = 13.5627 d, R<sub>p</sub> = 1.82 R<sub>Jup</sub>) is where SASpro contributes on the amateur-detection side through the Backyard Eclipsing Exoplanet Project (BEEP); the publication-grade fits in that paper are done in dedicated professional astronomy tools.
 </div>
 
 </body>

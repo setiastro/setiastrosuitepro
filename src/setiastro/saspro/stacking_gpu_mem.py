@@ -38,6 +38,55 @@ def session_from_manual_keyword(path: str, keyword: str) -> str:
     return kw
 
 
+def split_by_night_gap(nights: dict, gap_days: int, undated_label: str = "All") -> list:
+    """Split dark frames into sets wherever their capture nights leave a gap.
+
+    ``nights`` maps each path to its capture night (a ``datetime.date``) or
+    None. Sorted by night, a new set starts where two consecutive nights are
+    more than ``gap_days`` apart, so darks shot over a run of nights stay
+    together while darks from other months or years do not mix. 0 gives one
+    set per night. Undated frames form one more set of their own.
+
+    Returns ``[(label, [paths])]``; a dated set is labelled with its first
+    night ('YYYY-MM-DD'), the undated set with ``undated_label``.
+    """
+    gap = max(0, int(gap_days))
+    dated = sorted(((d, p) for p, d in nights.items() if d is not None),
+                   key=lambda dp: (dp[0], str(dp[1])))
+    out, cur, last = [], [], None
+    for d, p in dated:
+        if cur and (d - last).days > gap:
+            out.append((cur[0][0].isoformat(), [q for _, q in cur]))
+            cur = []
+        cur.append((d, p))
+        last = d
+    if cur:
+        out.append((cur[0][0].isoformat(), [q for _, q in cur]))
+    undated = [p for p, d in nights.items() if d is None]
+    if undated:
+        out.append((undated_label, undated))
+    return out
+
+
+def days_beyond_gap(night, first, last, gap_days: int) -> int:
+    """How far ``night`` lies outside a master's nights [first, last], in
+    days, counting only beyond the gap: 0 when it is within ``gap_days`` of
+    them (those darks count as the same set) or when either date is unknown.
+    """
+    if night is None or first is None:
+        return 0
+    last = last or first
+    if first > last:
+        first, last = last, first
+    if night < first:
+        d = (first - night).days
+    elif night > last:
+        d = (night - last).days
+    else:
+        d = 0
+    return d if d > max(0, int(gap_days)) else 0
+
+
 _FILENAME_SET_SEP = r"[\s_\-\.]+"
 
 

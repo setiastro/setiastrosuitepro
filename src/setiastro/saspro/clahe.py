@@ -1,9 +1,12 @@
 #saspro/clahe.py
 from __future__ import annotations
 import json
+import os
 import time
+from concurrent.futures import ThreadPoolExecutor
 import numpy as np
 import cv2
+from numba import njit
 
 from PyQt6.QtCore import (
     Qt, QTimer, QSettings, QObject, QRunnable, QThreadPool, QEvent, QPointF,
@@ -32,21 +35,161 @@ from setiastro.saspro.help_support import make_help_button
 # Patch revision marker — used by the patcher for idempotency. Do not remove.
 _SASPRO_CLAHE_UI_REV = 4
 
-# Bit depth of the plane handed to cv2.CLAHE. 16 keeps 32-bit float data out of
-# an 8-bit round trip (no posterisation on linear astro data). Set to 8 to
-# restore the pre-rev2 behaviour exactly.
+# 16: the core below -- 8-bit CLAHE with continuous output, so 32-bit float
+# data isn't posterised to 256 levels. 8: cv2's 8-bit CLAHE, which restores the
+# pre-rev2 behaviour exactly.
 DEFAULT_PRECISION = 16
 
 # ----------------------- Core -----------------------
+# The 16-bit plane runs our own CLAHE, not cv2's 16-bit one, which is broken.
+# cv2 at 16 bits (65536 bins) hands each tile's clipped excess back as whole
+# counts, one per bin at a stride of 65536 // excess starting from bin 0;
+# once a tile holds more than ~32768 pixels the stride drops to 1, the excess
+# piles into the lower half of the histogram and roughly doubles that tile's
+# brightness, and the background breaks up into tile-sized grey blotches (a
+# 4129x3000 frame: fine at a 20x20 grid, haywire at 19x19, i.e. from about
+# 161 px tiles). Its clip limit is dead as well: the cap is
+# max(int(clip * area / 65536), 1), the same count for every clip from 0.1
+# to ~5.5 at 128 px tiles.
+# So the 16-bit plane is cv2's 8-bit CLAHE without the 8-bit steps: the same
+# 256-bin histograms of round(255 v), clip limit, excess redistribution,
+# tiles, padding and bilinear tile blend, but the LUTs stay float and each
+# pixel's own value is read off them by linear interpolation between levels.
+# At the 256 levels it equals cv2 at 8 bits before cv2 rounds, so it looks
+# and responds to the clip limit like 8-bit mode, minus the posterisation.
+_LEVELS = 256
+
+
+@njit(nogil=True, cache=True)
+def _clahe16_luts(src, t0, t1, nx, th, tw, cap, luts):
+    """LUTs of tiles t0..t1-1 (row-major) of the padded uint8 plane, built as
+    cv2's 8-bit CLAHE builds them -- clip at a whole-count cap, give every bin
+    excess // 256 and the remainder one count per bin at cv2's stride from
+    bin 0 -- with the CDF scaled to 0..255 but not rounded."""
+    hist = np.empty(256, np.int64)
+    scale = 255.0 / (th * tw)
+    for t in range(t0, t1):
+        ty = t // nx
+        tx = t - ty * nx
+        hist[:] = 0
+        for y in range(ty * th, (ty + 1) * th):
+            for x in range(tx * tw, (tx + 1) * tw):
+                hist[src[y, x]] += 1
+        if cap > 0:
+            clipped = 0
+            for i in range(256):
+                if hist[i] > cap:
+                    clipped += hist[i] - cap
+                    hist[i] = cap
+            batch = clipped // 256
+            residual = clipped - batch * 256
+            for i in range(256):
+                hist[i] += batch
+            if residual > 0:
+                step = max(256 // residual, 1)
+                i = 0
+                while i < 256 and residual > 0:
+                    hist[i] += 1
+                    residual -= 1
+                    i += step
+        cum = 0
+        for i in range(256):
+            cum += hist[i]
+            luts[ty, tx, i] = cum * scale
+
+
+@njit(nogil=True, cache=True)
+def _clahe16_rows(p, out, y0, y1, luts, r1, r2, ya, ax, bx, xa):
+    """Output rows y0..y1-1: each pixel's value 255 p read off the four nearest
+    tile LUTs, linearly between levels, then blended bilinearly as cv2 does."""
+    W = p.shape[1]
+    for y in range(y0, y1):
+        up = luts[r1[y]]
+        dn = luts[r2[y]]
+        wy = ya[y]
+        for x in range(W):
+            v = p[y, x] * 255.0
+            k = int(v)
+            if k > 254:
+                k = 254
+            f = v - k
+            a = ax[x]
+            b = bx[x]
+            wx = xa[x]
+            ua = up[a, k] + (up[a, k + 1] - up[a, k]) * f
+            ub = up[b, k] + (up[b, k + 1] - up[b, k]) * f
+            da = dn[a, k] + (dn[a, k + 1] - dn[a, k]) * f
+            db = dn[b, k] + (dn[b, k + 1] - dn[b, k]) * f
+            out[y, x] = ((ua * (1.0 - wx) + ub * wx) * (1.0 - wy)
+                         + (da * (1.0 - wx) + db * wx) * wy) / 255.0
+
+
+def _clahe16_cap(clip_limit: float, area: int) -> int:
+    """Per-bin clip limit in counts, as cv2 sets it (0 = no clipping)."""
+    if clip_limit <= 0:
+        return 0
+    return max(int(float(clip_limit) * area / _LEVELS), 1)
+
+
+def _split(n: int, parts: int) -> list[tuple[int, int]]:
+    parts = max(1, min(int(parts), int(n)))
+    edges = np.linspace(0, n, parts + 1).astype(int)
+    return [(int(a), int(b)) for a, b in zip(edges[:-1], edges[1:]) if b > a]
+
+
+def _clahe16(plane01: np.ndarray, clip_limit: float, tile_grid_size: tuple) -> np.ndarray:
+    """CLAHE of a 0..1 float plane: 8-bit CLAHE without the 8-bit steps;
+    float32 0..1 out."""
+    p = np.nan_to_num(np.asarray(plane01, dtype=np.float32),
+                      nan=0.0, posinf=1.0, neginf=0.0)
+    np.clip(p, 0.0, 1.0, out=p)
+    q = (p * 255.0 + 0.5).astype(np.uint8)
+    H, W = q.shape
+    nx, ny = int(tile_grid_size[0]), int(tile_grid_size[1])
+    # cv2's tiling: a plane that doesn't divide into the grid is extended by
+    # reflection on both axes (by a whole tile on an axis that does divide).
+    if W % nx or H % ny:
+        src = cv2.copyMakeBorder(q, 0, ny - H % ny, 0, nx - W % nx,
+                                 cv2.BORDER_REFLECT_101)
+    else:
+        src = q
+    th, tw = src.shape[0] // ny, src.shape[1] // nx
+    cap = _clahe16_cap(clip_limit, th * tw)
+
+    # interpolation weights, as cv2 computes them (float32)
+    txf = np.arange(W, dtype=np.float32) * np.float32(1.0 / tw) - np.float32(0.5)
+    kx = np.floor(txf).astype(np.int64)
+    xa = (txf - kx).astype(np.float64)
+    ax = np.maximum(kx, 0)
+    bx = np.minimum(kx + 1, nx - 1)
+    tyf = np.arange(H, dtype=np.float32) * np.float32(1.0 / th) - np.float32(0.5)
+    t1 = np.floor(tyf).astype(np.int64)
+    ya = (tyf - t1).astype(np.float64)
+    r1 = np.maximum(t1, 0)
+    r2 = np.minimum(t1 + 1, ny - 1)
+
+    # Serial nogil kernels on a thread pool: numba's parallel layer must not
+    # be entered from several threads.
+    out = np.empty((H, W), np.float32)
+    luts = np.empty((ny, nx, _LEVELS), np.float32)
+    workers = max(1, os.cpu_count() or 1)
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        list(pool.map(lambda c: _clahe16_luts(src, c[0], c[1], nx, th, tw, cap, luts),
+                      _split(nx * ny, workers)))
+        list(pool.map(lambda c: _clahe16_rows(p, out, c[0], c[1], luts, r1, r2,
+                                              ya, ax, bx, xa),
+                      _split(H, workers)))
+    return out
+
+
 def _clahe_plane(plane01: np.ndarray, clip_limit: float, tile_grid_size: tuple,
                  precision: int) -> np.ndarray:
-    """Run cv2 CLAHE on a single 0..1 float plane at 8- or 16-bit precision."""
+    """CLAHE on a single 0..1 float plane at 8- or 16-bit precision."""
+    if int(precision) >= 16:
+        return _clahe16(plane01, clip_limit, tile_grid_size)
     c = cv2.createCLAHE(clipLimit=float(clip_limit),
                         tileGridSize=(int(tile_grid_size[0]), int(tile_grid_size[1])))
     p = np.clip(np.asarray(plane01, dtype=np.float32), 0.0, 1.0)
-    if int(precision) >= 16:
-        q = (p * 65535.0 + 0.5).astype(np.uint16)
-        return c.apply(q).astype(np.float32) / 65535.0
     q = (p * 255.0 + 0.5).astype(np.uint8)
     return c.apply(q).astype(np.float32) / 255.0
 

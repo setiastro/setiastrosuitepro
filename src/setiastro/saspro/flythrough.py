@@ -1933,12 +1933,18 @@ class FlythroughDialog(QDialog):
         close_row.addWidget(self.btn_reset)
         close_row.addWidget(btn_close)
         close_row.addStretch(1)
-        from setiastro.saspro.shortcuts import ShortcutGrip
-        close_row.addWidget(ShortcutGrip("flythrough", self))
-        close_row.addWidget(make_help_button("flythrough", self))
         right.addLayout(close_row)
         right.addStretch(1)
         body.addLayout(right, 2)
+
+        # Grip + help: their own row along the bottom (above the footer)
+        from setiastro.saspro.shortcuts import ShortcutGrip
+        grip_row = QHBoxLayout()
+        grip_row.setContentsMargins(0, 0, 0, 0)
+        grip_row.addWidget(ShortcutGrip("flythrough", self))
+        grip_row.addStretch(1)
+        grip_row.addWidget(make_help_button("flythrough", self))
+        root.addLayout(grip_row)
 
         foot = QLabel("Franklin Marek  |  www.setiastro.com")
         foot.setAlignment(Qt.AlignmentFlag.AlignCenter)

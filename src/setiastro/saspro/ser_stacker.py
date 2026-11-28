@@ -205,6 +205,9 @@ class AnalyzeResult:
     # every _ensure_source() call that receives it returns frames
     # already divided by the flat.
     flat: Optional[np.ndarray] = None
+    # Per-frame bool: True where alignment failed (surface: the anchor was
+    # not found).  Such frames are never stacked or exported.
+    align_failed: Optional[np.ndarray] = None
 
 @dataclass
 class FrameEval:
@@ -649,293 +652,322 @@ def _reject_ap_outliers(ap_dx: np.ndarray, ap_dy: np.ndarray, ap_cf: np.ndarray,
     return keep
 
 
-def _coarse_surface_ref_locked(
+# ---------------------------------------------------------------------------
+# Surface tracking: anchor template, whole-area search, one path per capture
+# ---------------------------------------------------------------------------
+
+_SURF_TRACK_K = 4             # candidate matches kept per frame
+_SURF_TRACK_JUMP_COST = 0.15  # path cost of a big move between frames, in NCC units
+_SURF_TRACK_COARSE_DIM = 480  # long side of the level the whole-area search runs at
+_SURF_REFINE_GUARD_PX = 3.0   # polish moves up to this are never treated as outliers
+
+
+def _surface_guard_refine(dx, dy, base_dx, base_dy, valid=None) -> int:
+    """
+    Undo the AP/SSD polish on frames where it moved an OUTLYING distance from
+    the anchor track: that is the polish settling in a wrong SSD minimum.
+
+    Outlier is judged against this capture's own polish moves (seeing makes
+    the whole-field consensus differ from the anchor by a few pixels on some
+    data, e.g. H-alpha): beyond max(_SURF_REFINE_GUARD_PX, median + 5 MAD-sigma).
+    In place; returns how many frames were reverted.
+    """
+    mv = np.hypot(np.asarray(dx, np.float64) - base_dx, np.asarray(dy, np.float64) - base_dy)
+    sel = np.ones(mv.shape, dtype=bool) if valid is None else np.asarray(valid, dtype=bool)
+    if not np.any(sel):
+        return 0
+    v = mv[sel]
+    med = float(np.median(v))
+    sig = 1.4826 * float(np.median(np.abs(v - med)))
+    bad = sel & (mv > max(_SURF_REFINE_GUARD_PX, med + 5.0 * sig))
+    dx[bad] = base_dx[bad]
+    dy[bad] = base_dy[bad]
+    return int(np.count_nonzero(bad))
+
+
+def _surface_template_rect(W: int, H: int, anchor_xywh, *, max_frac: float = 0.6) -> tuple[int, int, int, int]:
+    """
+    Template rectangle (x, y, w, h) in tracking-area pixels.
+
+    The user's anchor when there is one, else the central half of the area.
+    Each side is held between a floor (tiny anchors are ambiguous on lunar
+    terrain) and max_frac of the area, so the search always has room to find
+    the anchor again after the scene drifts or jumps.
+    """
+    if anchor_xywh is not None:
+        ax, ay, aw, ah = [float(v) for v in anchor_xywh]
+    else:
+        aw, ah = W * 0.5, H * 0.5
+        ax, ay = (W - aw) * 0.5, (H - ah) * 0.5
+    cx = ax + aw * 0.5
+    cy = ay + ah * 0.5
+    floor = max(32.0, 0.12 * min(W, H))
+    tw = int(round(min(max(aw, floor), W * max_frac)))
+    th = int(round(min(max(ah, floor), H * max_frac)))
+    tw = max(8, min(tw, W))
+    th = max(8, min(th, H))
+    x = int(round(cx - tw * 0.5))
+    y = int(round(cy - th * 0.5))
+    x = max(0, min(W - tw, x))
+    y = max(0, min(H - th, y))
+    return x, y, tw, th
+
+
+def _surface_track_prep(m: np.ndarray, down: int) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Band-passed (coarse, fine) images for surface tracking.
+
+    coarse is at 1/down resolution, fine at full resolution.  Both have the
+    large-scale light (terminator, vignetting, transparency) removed, so the
+    match follows surface detail rather than brightness.  The fine image
+    borrows the coarse low-pass, upsampled, instead of a huge full-size blur.
+    """
+    m = m.astype(np.float32, copy=False)
+    H, W = m.shape[:2]
+    if down > 1:
+        c = cv2.resize(m, (max(2, W // down), max(2, H // down)), interpolation=cv2.INTER_AREA)
+    else:
+        c = m
+    lo_c = cv2.GaussianBlur(c, (0, 0), 8.0)
+    coarse = cv2.GaussianBlur(c, (0, 0), 1.0) - lo_c
+    if down > 1:
+        lo_f = cv2.resize(lo_c, (W, H), interpolation=cv2.INTER_LINEAR)
+        fine = cv2.GaussianBlur(m, (0, 0), 1.0) - lo_f
+    else:
+        fine = coarse
+    return coarse, fine
+
+
+def _ncc_subpixel(R: np.ndarray, x: int, y: int) -> tuple[float, float]:
+    """Parabola vertex around an NCC maximum at integer (x, y), per axis."""
+    sx = sy = 0.0
+    if 0 < x < R.shape[1] - 1:
+        a, b, c = float(R[y, x - 1]), float(R[y, x]), float(R[y, x + 1])
+        d = a - 2.0 * b + c
+        if d < -1e-12:
+            sx = float(np.clip(0.5 * (a - c) / d, -0.5, 0.5))
+    if 0 < y < R.shape[0] - 1:
+        a, b, c = float(R[y - 1, x]), float(R[y, x]), float(R[y + 1, x])
+        d = a - 2.0 * b + c
+        if d < -1e-12:
+            sy = float(np.clip(0.5 * (a - c) / d, -0.5, 0.5))
+    return sx, sy
+
+
+def _ncc_top_peaks(R: np.ndarray, k: int, nms: int) -> list[tuple[int, int, float]]:
+    """The k best NCC maxima, each at least nms pixels from the ones before."""
+    work = R.copy()
+    out: list[tuple[int, int, float]] = []
+    for _ in range(int(k)):
+        _, mv, _, ml = cv2.minMaxLoc(work)
+        if not np.isfinite(mv) or mv < -1.0:
+            break
+        x, y = int(ml[0]), int(ml[1])
+        out.append((x, y, float(mv)))
+        work[max(0, y - nms): y + nms + 1, max(0, x - nms): x + nms + 1] = -2.0
+    return out
+
+
+def _surface_choose_path(
+    pos: np.ndarray, score: np.ndarray, valid: np.ndarray, *, jump_cost: float, d0: float,
+) -> np.ndarray:
+    """
+    Pick one candidate per frame so the whole capture forms the cheapest path.
+
+    A candidate costs (1 - NCC); moving between consecutive frames costs
+    jump_cost * min(1, distance / d0).  A one-frame excursion to a lookalike
+    pays the move twice (out and back), so it must out-score the true match by
+    2*jump_cost; a real jump, where the only strong match is somewhere new,
+    pays once and is followed at once.  Frames with no candidate are skipped
+    (choice -1) and the path continues across them.
+    """
+    n, K = score.shape
+    choice = np.full((n,), -1, dtype=np.int32)
+    frames = np.flatnonzero(valid.any(axis=1))
+    if frames.size == 0:
+        return choice
+    unary = np.where(valid, 1.0 - score.astype(np.float64), np.inf)
+    back = np.zeros((frames.size, K), dtype=np.int32)
+    cost = unary[frames[0]].copy()
+    for t in range(1, frames.size):
+        i, j = frames[t], frames[t - 1]
+        d = np.hypot(pos[i, :, None, 0] - pos[j, None, :, 0],
+                     pos[i, :, None, 1] - pos[j, None, :, 1])          # (K_now, K_prev)
+        total = cost[None, :] + jump_cost * np.minimum(1.0, d / d0)
+        back[t] = np.argmin(total, axis=1)
+        cost = unary[i] + total[np.arange(K), back[t]]
+    k = int(np.argmin(cost))
+    for t in range(frames.size - 1, -1, -1):
+        choice[frames[t]] = k
+        k = int(back[t, k])
+    return choice
+
+
+def _coarse_surface_anchor_track(
     source_obj,
     *,
     n: int,
-    roi,
-    roi_used=None,
+    roi_track,
+    roi_used,
+    anchor,
     debayer: bool,
     to_rgb: bool,
     bayer_pattern: Optional[str] = None,
     progress_cb=None,
-    progress_every: int = 25,
-    # tuning:
-    down: int = 2,
-    template_size: int = 256,
-    search_radius: int = 96,
-    bandpass: bool = True,
-    # ✅ NEW: parallel coarse
     workers: int | None = None,
-    stride: int = 16,
     flat=None,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    log_cb=None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """
-    Surface coarse tracking that DOES NOT DRIFT:
-    - Locks to frame0 reference (in roi=roi_track coords).
-    - Uses NCC + subpixel phaseCorr.
-    - Optional parallelization by chunking time into segments of length=stride.
-      Each segment runs sequentially (keeps pred window), segments run in parallel.
-    """
-    if cv2 is None:
-        dx = np.zeros((n,), np.float32)
-        dy = np.zeros((n,), np.float32)
-        cc = np.ones((n,), np.float32)
-        return dx, dy, cc
+    Surface coarse tracking that survives jumps.
 
+    The anchor region of frame 0 is the template.  Every frame is searched
+    over the WHOLE tracking area (at a reduced level for big frames), never
+    only a window around the previous position, so a jump of any size inside
+    the frame is found.  The best few matches per frame are refined to
+    sub-pixel at full resolution, and _surface_choose_path picks one per
+    frame for the capture as a whole.
+
+    Returns (dx, dy, conf, ok).  dx/dy shift each frame onto frame 0; conf is
+    the full-resolution NCC of the chosen match; ok is False where the anchor
+    was not found (no match at all, or one far weaker than this capture's
+    typical match).  Frames that are not ok carry the last good shift and
+    must not be stacked.
+    """
     dx = np.zeros((n,), dtype=np.float32)
     dy = np.zeros((n,), dtype=np.float32)
-    cc = np.zeros((n,), dtype=np.float32)
+    conf = np.zeros((n,), dtype=np.float32)
+    ok = np.zeros((n,), dtype=bool)
 
-    def _downN(m: np.ndarray) -> np.ndarray:
-        if down <= 1:
-            return m.astype(np.float32, copy=False)
-        H, W = m.shape[:2]
-        return cv2.resize(
-            m,
-            (max(2, W // down), max(2, H // down)),
-            interpolation=cv2.INTER_AREA,
-        ).astype(np.float32, copy=False)
-
-    def _pick_anchor_center_ds(W: int, H: int) -> tuple[int, int]:
-        cx = W // 2
-        cy = H // 2
-        if roi_used is None or roi is None:
-            return int(cx), int(cy)
-        try:
-            xt, yt, wt, ht = [int(v) for v in roi]
-            xu, yu, wu, hu = [int(v) for v in roi_used]
-            cux = xu + (wu * 0.5)
-            cuy = yu + (hu * 0.5)
-            cx_full = cux - xt
-            cy_full = cuy - yt
-            cx = int(round(cx_full / max(1, int(down))))
-            cy = int(round(cy_full / max(1, int(down))))
-            cx = max(0, min(W - 1, cx))
-            cy = max(0, min(H - 1, cy))
-        except Exception:
-            pass
-        return int(cx), int(cy)
-
-    # ---------------------------
-    # Prep ref/template once
-    # ---------------------------
     src0, owns0 = _ensure_source(source_obj, cache_items=2, flat=flat)
     try:
-        img0 = _get_frame(src0, 0, roi=roi, debayer=debayer, to_float01=True, force_rgb=bool(to_rgb), bayer_pattern=bayer_pattern)
-
-        _src0_shape = img0.shape  # stash for conforming subsequent frames
-        ref0 = _to_mono01(img0).astype(np.float32, copy=False)
-        ref0 = _downN(ref0)
-        ref0p = _bandpass(ref0) if bandpass else (ref0 - float(ref0.mean()))
-
-        H, W = ref0p.shape[:2]
-        ts = int(max(64, min(template_size, min(H, W) - 4)))
-        half = ts // 2
-
-        cx0, cy0 = _pick_anchor_center_ds(W, H)
-        rx0 = max(0, min(W - ts, cx0 - half))
-        ry0 = max(0, min(H - ts, cy0 - half))
-        ref_t = ref0p[ry0:ry0 + ts, rx0:rx0 + ts].copy()
+        img0 = _get_frame(src0, 0, roi=roi_track, debayer=debayer, to_float01=True,
+                          force_rgb=bool(to_rgb), bayer_pattern=bayer_pattern)
     finally:
         if owns0:
             try:
                 src0.close()
             except Exception:
                 pass
+    shape0 = img0.shape
+    m0 = _to_mono01(img0).astype(np.float32, copy=False)
+    H, W = m0.shape[:2]
 
-    dx[0] = 0.0
-    dy[0] = 0.0
-    cc[0] = 1.0
+    # Anchor is in ROI space; the tracking area is the ROI plus a margin.
+    anchor_t = None
+    if anchor is not None:
+        try:
+            ax, ay, aw, ah = [int(v) for v in anchor]
+            ox = oy = 0
+            if roi_used is not None and roi_track is not None:
+                ox = int(roi_used[0]) - int(roi_track[0])
+                oy = int(roi_used[1]) - int(roi_track[1])
+            anchor_t = (ax + ox, ay + oy, aw, ah)
+        except Exception:
+            anchor_t = None
+    tx, ty, tw, th = _surface_template_rect(W, H, anchor_t)
 
-    if progress_cb:
-        progress_cb(0, n, "Surface: coarse (ref-locked NCC+subpix)…")
+    down = int(np.ceil(max(W, H) / float(_SURF_TRACK_COARSE_DIM)))
+    down = max(1, min(down, min(tw, th) // 24))
+    c0, f0 = _surface_track_prep(m0, down)
+    txc, tyc = tx // down, ty // down
+    twc = max(8, min(tw // down, c0.shape[1] - txc))
+    thc = max(8, min(th // down, c0.shape[0] - tyc))
+    tmpl_c = c0[tyc:tyc + thc, txc:txc + twc].copy()
+    tmpl_f = f0[ty:ty + th, tx:tx + tw].copy()
+    off_x, off_y = tx - txc * down, ty - tyc * down
+    nms = max(2, min(twc, thc) // 4)
+    margin = down + 2
+    K = _SURF_TRACK_K
 
-    # If no workers requested (or too small), fall back to sequential
-    if workers is None:
-        cpu = os.cpu_count() or 4
-        workers = max(1, min(cpu, 48))
-    workers = int(max(1, workers))
-    stride = int(max(4, stride))
+    if log_cb:
+        src_txt = "anchor" if anchor_t is not None else "centre (no anchor)"
+        log_cb(f"Surface tracking: template {tw}x{th} at ({tx},{ty}) from the {src_txt}; "
+               f"whole-area search over {W}x{H}" + (f" at 1/{down} scale" if down > 1 else ""))
 
-    # ---------------------------
-    # Core "one frame" matcher
-    # ---------------------------
-    def _match_one(curp: np.ndarray, pred_x: float, pred_y: float, r: int) -> tuple[float, float, float, float, float]:
-        # returns (mx_ds, my_ds, dx_full, dy_full, conf)
-        x0 = int(max(0, min(W - 1, pred_x - r)))
-        y0 = int(max(0, min(H - 1, pred_y - r)))
-        x1 = int(min(W, pred_x + r + ts))
-        y1 = int(min(H, pred_y + r + ts))
+    pos = np.zeros((n, K, 2), dtype=np.float32)
+    score = np.full((n, K), -1.0, dtype=np.float32)
+    valid = np.zeros((n, K), dtype=bool)
 
-        win = curp[y0:y1, x0:x1]
-        if win.shape[0] < ts or win.shape[1] < ts:
-            return float(pred_x), float(pred_y), 0.0, 0.0, 0.0
-
-        res = cv2.matchTemplate(win, ref_t, cv2.TM_CCOEFF_NORMED)
-        _, max_val, _, max_loc = cv2.minMaxLoc(res)
-        conf_ncc = float(np.clip(max_val, 0.0, 1.0))
-
-        mx_ds = float(x0 + max_loc[0])
-        my_ds = float(y0 + max_loc[1])
-
-        # subpix refine on the matched patch
-        mx_i = int(round(mx_ds))
-        my_i = int(round(my_ds))
-        cur_t = curp[my_i:my_i + ts, mx_i:mx_i + ts]
-        if cur_t.shape == ref_t.shape:
-            (sdx, sdy), resp = cv2.phaseCorrelate(ref_t.astype(np.float32), cur_t.astype(np.float32))
-            sub_dx = float(sdx)
-            sub_dy = float(sdy)
-            conf_pc = float(np.clip(resp, 0.0, 1.0))
-        else:
-            sub_dx = 0.0
-            sub_dy = 0.0
-            conf_pc = 0.0
-
-        dx_ds = float(rx0 - mx_ds) + sub_dx
-        dy_ds = float(ry0 - my_ds) + sub_dy
-        dx_full = float(dx_ds * down)
-        dy_full = float(dy_ds * down)
-
-        conf = float(np.clip(0.65 * conf_ncc + 0.35 * conf_pc, 0.0, 1.0))
-        return float(mx_ds), float(my_ds), dx_full, dy_full, conf
-
-    # ---------------------------
-    # Keyframe boundary pass (sequential)
-    # ---------------------------
-    boundaries = list(range(0, n, stride))
-    start_pred = {}  # b -> (pred_x, pred_y)
-    start_pred[0] = (float(rx0), float(ry0))
-
-    # We use a slightly larger radius for boundary frames to be extra safe
-    r_key = int(max(16, int(search_radius) * 2))
-
-    srck, ownsk = _ensure_source(source_obj, cache_items=2, flat=flat)
-    try:
-        pred_x, pred_y = float(rx0), float(ry0)
-        for b in boundaries[1:]:
-            img = _get_frame(srck, b, roi=roi, debayer=debayer, to_float01=True, force_rgb=bool(to_rgb), bayer_pattern=bayer_pattern)
-            img = _conform_to_ref_shape(img, img0.shape) if 'img0' in dir() else img
-            cur = _to_mono01(img).astype(np.float32, copy=False)
-            cur = _downN(cur)
-            curp = _bandpass(cur) if bandpass else (cur - float(cur.mean()))
-
-            mx_ds, my_ds, dx_b, dy_b, conf_b = _match_one(curp, pred_x, pred_y, r_key)
-
-            # store boundary predictor (template top-left in this frame)
-            start_pred[b] = (mx_ds, my_ds)
-
-            # update for next boundary
-            pred_x, pred_y = mx_ds, my_ds
-
-            # also fill boundary output immediately (optional but nice)
-            dx[b] = dx_b
-            dy[b] = dy_b
-            cc[b] = conf_b
-            if conf_b < 0.15 and b > 0:
-                dx[b] = dx[b - 1]
-                dy[b] = dy[b - 1]
-    finally:
-        if ownsk:
-            try:
-                srck.close()
-            except Exception:
-                pass
-
-    # ---------------------------
-    # Parallel per-chunk scan (each chunk sequential)
-    # ---------------------------
-    r = int(max(16, search_radius))
-
-    def _run_chunk(b: int, e: int) -> int:
+    def _run(chunk: np.ndarray) -> int:
         src, owns = _ensure_source(source_obj, cache_items=0, flat=flat)
         try:
-            pred_x, pred_y = start_pred.get(b, (float(rx0), float(ry0)))
-            # if boundary already computed above, keep it; start after b
-            i0 = b
-            if b in start_pred and b != 0:
-                i0 = b + 1   # boundary already solved with r_key
-
-            if i0 == 0:
-                i0 = 1
-            for i in range(i0, e):
-                if i in start_pred:
-                    pred_x, pred_y = start_pred[i]
-                    continue
-
-                img = _get_frame(src, i, roi=roi, debayer=debayer, to_float01=True, force_rgb=bool(to_rgb), bayer_pattern=bayer_pattern)
-                img = _conform_to_ref_shape(img, _src0_shape)
-                cur = _to_mono01(img).astype(np.float32, copy=False)
-                cur = _downN(cur)
-                curp = _bandpass(cur) if bandpass else (cur - float(cur.mean()))
-
-                mx_ds, my_ds, dx_i, dy_i, conf_i = _match_one(curp, pred_x, pred_y, r)
-
-                dx[i] = dx_i
-                dy[i] = dy_i
-                cc[i] = conf_i
-
-                pred_x, pred_y = mx_ds, my_ds
-
-                if conf_i < 0.15 and i > 0:
-                    dx[i] = dx[i - 1]
-                    dy[i] = dy[i - 1]
-            return (e - b)
+            for i in chunk.tolist():
+                img = _get_frame(src, int(i), roi=roi_track, debayer=debayer, to_float01=True,
+                                 force_rgb=bool(to_rgb), bayer_pattern=bayer_pattern)
+                img = _conform_to_ref_shape(img, shape0)
+                m = _to_mono01(img).astype(np.float32, copy=False)
+                cimg, fimg = _surface_track_prep(m, down)
+                R = cv2.matchTemplate(cimg, tmpl_c, cv2.TM_CCOEFF_NORMED)
+                R = np.nan_to_num(R, nan=-1.0, posinf=-1.0, neginf=-1.0)
+                for k, (px, py, v) in enumerate(_ncc_top_peaks(R, K, nms)):
+                    if down == 1:
+                        sx, sy = _ncc_subpixel(R, px, py)
+                        pos[i, k] = (px + sx, py + sy)
+                        score[i, k] = v
+                        valid[i, k] = True
+                        continue
+                    X, Y = px * down + off_x, py * down + off_y
+                    x0, y0 = max(0, X - margin), max(0, Y - margin)
+                    x1, y1 = min(W, X + margin + tw), min(H, Y + margin + th)
+                    win = fimg[y0:y1, x0:x1]
+                    if win.shape[0] < th or win.shape[1] < tw:
+                        continue
+                    Rf = cv2.matchTemplate(win, tmpl_f, cv2.TM_CCOEFF_NORMED)
+                    Rf = np.nan_to_num(Rf, nan=-1.0, posinf=-1.0, neginf=-1.0)
+                    _, vf, _, lf = cv2.minMaxLoc(Rf)
+                    sx, sy = _ncc_subpixel(Rf, int(lf[0]), int(lf[1]))
+                    pos[i, k] = (x0 + lf[0] + sx, y0 + lf[1] + sy)
+                    score[i, k] = float(vf)
+                    valid[i, k] = True
         finally:
             if owns:
                 try:
                     src.close()
                 except Exception:
                     pass
+        return int(chunk.size)
 
-    if workers <= 1 or n <= stride * 2:
-        # small job: just do sequential scan exactly like before
-        src, owns = _ensure_source(source_obj, cache_items=2, flat=flat)
-        try:
-            pred_x, pred_y = float(rx0), float(ry0)
-            for i in range(1, n):
-                img = _get_frame(src, i, roi=roi, debayer=debayer, to_float01=True, force_rgb=bool(to_rgb), bayer_pattern=bayer_pattern)
-                img = _conform_to_ref_shape(img, _src0_shape)
-                cur = _to_mono01(img).astype(np.float32, copy=False)
-                cur = _downN(cur)
-                curp = _bandpass(cur) if bandpass else (cur - float(cur.mean()))
-
-                mx_ds, my_ds, dx_i, dy_i, conf_i = _match_one(curp, pred_x, pred_y, r)
-                dx[i] = dx_i
-                dy[i] = dy_i
-                cc[i] = conf_i
-                pred_x, pred_y = mx_ds, my_ds
-
-                if conf_i < 0.15:
-                    dx[i] = dx[i - 1]
-                    dy[i] = dy[i - 1]
-
-                if progress_cb and (i % int(max(1, progress_every)) == 0 or i == n - 1):
-                    progress_cb(i, n, "Surface: coarse (ref-locked NCC+subpix)…")
-        finally:
-            if owns:
-                try:
-                    src.close()
-                except Exception:
-                    pass
-        return dx, dy, cc
-
-    # Parallel chunks
+    if workers is None:
+        workers = max(1, min(os.cpu_count() or 4, 16))
+    workers = int(max(1, workers))
+    chunks = [c for c in np.array_split(np.arange(n, dtype=np.int32), max(1, min(n, workers * 4))) if c.size]
+    if progress_cb:
+        progress_cb(0, n, "Surface: tracking anchor…")
     done = 0
     with ThreadPoolExecutor(max_workers=workers) as ex:
-        futs = []
-        for b in boundaries:
-            e = min(n, b + stride)
-            futs.append(ex.submit(_run_chunk, b, e))
-
-        for fut in as_completed(futs):
+        for fut in as_completed([ex.submit(_run, c) for c in chunks]):
             done += int(fut.result())
             if progress_cb:
-                # best-effort: done is "frames processed" not exact index
-                progress_cb(min(done, n - 1), n, "Surface: coarse (ref-locked NCC+subpix)…")
+                progress_cb(done, n, "Surface: tracking anchor…")
 
-    return dx, dy, cc
+    choice = _surface_choose_path(pos, score, valid, jump_cost=_SURF_TRACK_JUMP_COST,
+                                  d0=max(8.0, 0.05 * max(W, H)))
+    has = choice >= 0
+    rows = np.arange(n)
+    pick = np.maximum(choice, 0)
+    sel_pos = pos[rows, pick]
+    sel_score = score[rows, pick]
+    dx[has] = tx - sel_pos[has, 0]
+    dy[has] = ty - sel_pos[has, 1]
+    conf[has] = np.clip(sel_score[has], 0.0, 1.0)
+
+    typical = float(np.median(conf[has])) if has.any() else 0.0
+    ok = has & (conf >= max(0.2, 0.5 * typical))
+    ok[0] = True   # frame 0 is the reference by definition
+    last_x, last_y = 0.0, 0.0
+    for i in range(n):
+        if ok[i]:
+            last_x, last_y = float(dx[i]), float(dy[i])
+        else:
+            dx[i], dy[i] = last_x, last_y
+
+    if log_cb:
+        n_bad = int(n - np.count_nonzero(ok))
+        log_cb(f"Surface tracking: match NCC median {typical:.3f}; "
+               f"anchor not found in {n_bad} of {n} frames"
+               + (" (dropped from the stack)" if n_bad else ""))
+    return dx, dy, conf, ok
 
 
 def _shift_image(img01: np.ndarray, dx: float, dy: float) -> np.ndarray:
@@ -1445,6 +1477,11 @@ def stack_ser(
             keep_idx = keep_idx[km[keep_idx]]
             if keep_idx.size == 0:
                 raise ValueError("keep_mask rejected all frames in the Keep% set.")
+        _failed = getattr(analysis, "align_failed", None)
+        if _failed is not None and np.asarray(_failed).shape == (n,):
+            keep_idx = keep_idx[~np.asarray(_failed, dtype=bool)[keep_idx]]
+            if keep_idx.size == 0:
+                raise ValueError("Alignment failed on every frame in the Keep% set.")
         # ── Quality weights ───────────────────────────────────────────────
         # analysis.quality already has the half-pedestal subtraction applied
         # in analyze_ser, so we use it directly as weights.
@@ -1469,6 +1506,22 @@ def stack_ser(
             bayer_pattern=bayer_pattern
         )
         acc_shape = first.shape
+
+        # Capture metadata (times, observer, target) for the result's header
+        # and WinJUPOS name, read while the source is open. Derotation warps
+        # every frame to derot_ref_i's instant, so that is the stack's epoch;
+        # the condition mirrors the derotation branch in _warp_chunk.
+        _derotated = bool(track_mode == "planetary" and planet_derotate
+                          and abs(float(planet_rot_deg_per_frame)) > 1e-12)
+        try:
+            from setiastro.saspro.planetary_metadata import collect_observation
+            observation = collect_observation(
+                src0, source_obj, keep_idx,
+                weights=_weight_for,
+                epoch_frame=(derot_ref_i if _derotated else None),
+            )
+        except Exception as e:
+            observation = {"notes": [f"Capture metadata unavailable: {e}"]}
     finally:
         if owns0:
             try:
@@ -1784,6 +1837,7 @@ def stack_ser(
         "drizzle_pixfrac": float(drizzle_pixfrac),
         "drizzle_kernel": str(drizzle_kernel),
         "drizzle_sigma": float(drizzle_sigma),
+        "observation": observation,
     }
     return out, diag
 
@@ -2176,22 +2230,18 @@ def analyze_ser(
     rot_step = float(getattr(cfg, "field_rotation_step_deg", 0.5))
 
     # ---- Surface coarse drift ----
+    track_ok: Optional[np.ndarray] = None
     if cfg.track_mode == "surface":
-        coarse_conf = np.zeros((n,), dtype=np.float32)
-        if progress_cb:
-            progress_cb(0, n, "Surface: coarse drift (ref-locked NCC+subpix)…")
-
-        dx_chain, dy_chain, cc_chain = _coarse_surface_ref_locked(
-            source_obj, n=n, roi=roi_track, roi_used=roi_used,
+        dx_chain, dy_chain, cc_chain, track_ok = _coarse_surface_anchor_track(
+            source_obj, n=n, roi_track=roi_track, roi_used=roi_used,
+            anchor=getattr(cfg, "surface_anchor", None),
             debayer=debayer, to_rgb=to_rgb, bayer_pattern=bpat,
-            progress_cb=progress_cb, progress_every=25,
-            down=2, template_size=256, search_radius=96, bandpass=True,
-            workers=min(workers, 8), stride=16,
-            flat=flat,
+            progress_cb=progress_cb, workers=min(workers, 16),
+            flat=flat, log_cb=log_cb,
         )
         dx[:] = dx_chain
         dy[:] = dy_chain
-        coarse_conf[:] = cc_chain
+        coarse_conf = cc_chain.astype(np.float32, copy=True)
 
     # ---- Surface rotation center ----
     surface_anchor_rot_cx: Optional[float] = None
@@ -2467,6 +2517,20 @@ def analyze_ser(
             if log_cb is not None:
                 log_cb(f"Rotation: {n_rejected} frames rejected (flat curve) — moved to end of quality order.")
 
+    # ---- Surface: frames where the anchor was not found ----
+    # Their shift is a placeholder, so they must never reach the stack.
+    align_failed: Optional[np.ndarray] = None
+    if cfg.track_mode == "surface" and track_ok is not None:
+        n_guard = _surface_guard_refine(dx, dy, dx_chain, dy_chain, valid=track_ok)
+        if n_guard and log_cb is not None:
+            log_cb(f"Surface tracking: AP/SSD polish undone on {n_guard} frames "
+                   f"(it moved them an outlying distance from the anchor track)")
+        align_failed = ~np.asarray(track_ok, dtype=bool)
+        if np.any(align_failed):
+            quality[align_failed] = 0.0
+            conf[align_failed] = 0.05
+            order[:] = np.argsort(-quality).astype(np.int32, copy=False)
+
     if cfg.track_mode == "surface":
         _print_surface_debug(dx=dx, dy=dy, conf=conf, coarse_conf=coarse_conf,
                              floor=0.05, prefix="[SER][Surface]")
@@ -2485,6 +2549,7 @@ def analyze_ser(
         disp_dx=disp_dx if correct_disp else None,
         disp_dy=disp_dy if correct_disp else None,
         flat=flat,
+        align_failed=align_failed,
     )
 
 def realign_ser(
@@ -2771,6 +2836,16 @@ def realign_ser(
     # ── Write back only what changed ─────────────────────────────────────────
     # ang, ang_conf, disp_dx, disp_dy, quality, order, ref_image, ref_cx/cy,
     # coarse_conf — all preserved from the original analyze_ser run.
+    _failed = getattr(analysis, "align_failed", None)
+    if cfg.track_mode == "surface":
+        _surface_guard_refine(dx, dy, prev_dx, prev_dy,
+                              valid=None if _failed is None else ~np.asarray(_failed, dtype=bool))
+    if _failed is not None:
+        _failed = np.asarray(_failed, dtype=bool)
+        dx[_failed] = prev_dx[_failed]
+        dy[_failed] = prev_dy[_failed]
+        conf[_failed] = 0.05
+
     analysis.dx   = dx
     analysis.dy   = dy
     analysis.conf = conf
@@ -3166,6 +3241,10 @@ def export_aligned_ser(
         indices = list(range(n_total))
     else:
         indices = [int(i) for i in frame_indices]
+    _failed = getattr(analysis, "align_failed", None)
+    if _failed is not None and np.asarray(_failed).shape == (n_total,):
+        _failed = np.asarray(_failed, dtype=bool)
+        indices = [i for i in indices if not _failed[i]]
 
     n_out = len(indices)
     if n_out == 0:

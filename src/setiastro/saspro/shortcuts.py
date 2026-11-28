@@ -8,7 +8,7 @@ import uuid
 import numpy as np
 
 from PyQt6.QtCore import (Qt, QPoint, QRect, QMimeData, QSettings, QByteArray,
-                          QDataStream, QIODevice, QEvent, QSize,
+                          QDataStream, QIODevice, QEvent, QSize, QTimer,
                           QCoreApplication, QT_TRANSLATE_NOOP)
 from PyQt6.QtGui import (QAction, QDrag, QIcon, QMouseEvent, QPixmap, QKeyEvent, QKeyEvent, QCursor, QKeySequence)
 from PyQt6.QtWidgets import (QToolBar, QWidget, QToolButton, QMenu, QApplication, QVBoxLayout, QHBoxLayout, QComboBox, QGroupBox, QGridLayout, QDoubleSpinBox, QSpinBox,
@@ -64,14 +64,17 @@ SASS_VER    = 1
 
 TOOLBAR_REORDER_MIME = "application/x-saspro-toolbar-reorder"
 # Accept these endings (case-insensitive)
+# What a file dropped on the workspace or on a view may be: everything File >
+# Open lists (file_mixin.open_files) plus .fts.gz, which load_image reads.
 OPENABLE_ENDINGS = (
     ".png", ".jpg", ".jpeg", ".webp",
     ".tif", ".tiff",
     ".fits", ".fit", ".fts",
-    ".fits.gz", ".fit.gz", ".fz",
+    ".fits.gz", ".fit.gz", ".fts.gz", ".fz",
     ".xisf",
     ".psb", ".psd",
     ".syq",
+    ".pdf",
     ".cr2", ".cr3", ".nef", ".arw", ".dng", ".raf", ".orf", ".rw2", ".pef",
 )
 
@@ -1104,13 +1107,13 @@ def _open_preset_editor_for_command(parent, command_id: str, initial: dict | Non
 
     if command_id == "wavescale_hdr":
         from setiastro.saspro.wavescale_hdr_preset import WaveScaleHDRPresetDialog
-        dlg = WaveScaleHDRPresetDialog(parent, initial=cur or {"n_scales":5,"compression_factor":1.5,"mask_gamma":5.0})
+        dlg = WaveScaleHDRPresetDialog(parent, initial=cur or {"n_scales":5,"compression_factor":1.5,"mask_gamma":5.0,"amount":1.0})
         return dlg.result_dict() if dlg.exec() == QDialog.DialogCode.Accepted else None
 
     if command_id in ("wavescale_dark_enhance","wavescale_dark_enhancer"):
         from setiastro.saspro.wavescalede_preset import WaveScaleDSEPresetDialog
         dlg = WaveScaleDSEPresetDialog(parent, initial=cur or {
-            "n_scales":6,"boost_factor":5.0,"mask_gamma":1.0,"iterations":2
+            "n_scales":6,"boost_factor":5.0,"mask_gamma":1.0,"iterations":2,"amount":1.0
         })
         return dlg.result_dict() if dlg.exec() == QDialog.DialogCode.Accepted else None
 
@@ -1759,32 +1762,31 @@ class ShortcutCanvas(QWidget):
             self.lower()
             return
 
-        # 4) File / folder open (unchanged)
+        # 4) Files / folders from Explorer or Finder → open them
         if self._md_has_openable_urls(md):
-            paths = self._collect_openable_files_from_urls(md)
-            if paths:
-                opener = getattr(self._mgr.mw, "_handle_external_file_drop", None)
-                if callable(opener):
-                    opener(paths)
-                else:
-                    dm = getattr(self._mgr.mw, "docman", None)
-                    if dm and hasattr(dm, "open_files") and callable(dm.open_files):
-                        docs = dm.open_files(paths)
-                        try:
-                            for d in (docs or []):
-                                self._mgr.mw._spawn_subwindow_for(d)
-                        except Exception:
-                            pass
-                    elif dm and hasattr(dm, "open_path") and callable(dm.open_path):
-                        for p in paths:
-                            doc = dm.open_path(p)
-                            if doc is not None:
-                                self._mgr.mw._spawn_subwindow_for(doc)
-            e.acceptProposedAction()
-            self.lower() 
+            if self.open_dropped_files(md):
+                e.acceptProposedAction()
+            else:
+                e.ignore()
+            self.lower()
             return
         self.lower()
-        e.ignore()  
+        e.ignore()
+
+    def open_dropped_files(self, md) -> bool:
+        """Open the image files in a drop (and those inside dropped folders),
+        through File > Open's own routine. Views send their file drops here
+        too (subwindow.ImageSubWindow). False if nothing could be opened."""
+        paths = self._collect_openable_files_from_urls(md)
+        opener = getattr(self._mgr.mw, "_open_image_paths", None)
+        if not paths or not callable(opener):
+            return False
+        # Opened after the drop returns: Explorer and Finder wait inside the
+        # drop until it does, so a big file or an error box would freeze them.
+        # (Opening inline here also let one unreadable file raise out of the
+        # drop -- a crash box -- and skip every file after it.)
+        QTimer.singleShot(0, lambda: opener(paths))
+        return True
 
     def contextMenuEvent(self, e):
         menu = QMenu(self)

@@ -184,6 +184,7 @@ from setiastro.saspro.resources import (
     starstretch_path, curves_path, disk_path, uhs_path, blink_path, ppp_path,gaia_path, unwarp_path,
     nbtorgb_path, freqsep_path, contsub_path, halo_path, cosmic_path,dithericon_path,flythrough_path,
     satellite_path, imagecombine_path, hdrcomposition_path, wrench_path, eye_icon_path,multiscale_decomp_path, nbi_path,surfacemosaic_path,
+    lunarsolver_path,
     disk_icon_path, nuke_path, hubble_path, collage_path, annotated_path, atlas_path, slap_path, satchroma_path, fx_path,
     colorwheel_path, font_path, csv_icon_path, spinner_path, wims_path, narrowbandnormalization_path,
     wimi_path, linearfit_path, debayer_path, aberration_path, acv_icon_path, snr_path,nbextract_icon,sssc_path,
@@ -2382,7 +2383,7 @@ class AstroSuiteProMainWindow(
         msg.setStandardButtons(QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
         msg.setDefaultButton(QMessageBox.StandardButton.Yes)
 
-        remember = QCheckBox(self.tr("Remember my choice"))
+        remember = QCheckBox(self.tr("Remember my choice"), msg)  # parented: see closeEvent
         msg.setCheckBox(remember)
 
         choice = msg.exec()
@@ -2548,7 +2549,7 @@ class AstroSuiteProMainWindow(
 
 
     def _open_docs_explorer(self):
-        """About -> Documentation... (F1): every built-in help page in one
+        """Help -> Documentation... (F1): every built-in help page in one
         window, with search and a link to the online wiki."""
         from setiastro.saspro.docs_explorer import open_docs_explorer
         open_docs_explorer(self)
@@ -5653,6 +5654,18 @@ class AstroSuiteProMainWindow(
         dlg.setWindowIcon(QIcon(unwarp_path))
         dlg.show()
 
+    def _open_lunar_solver(self):
+        from setiastro.saspro.lunar_solver_dialog import LunarSolverDialog
+        dm = getattr(self, "docman", None) or getattr(self, "doc_manager", None)
+        w = LunarSolverDialog(parent=self, doc_manager=dm)
+        w.setWindowFlag(Qt.WindowType.Window, True)
+        w.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        try:
+            w.setWindowIcon(QIcon(lunarsolver_path))
+        except Exception:
+            pass
+        w.show()
+
     def _open_finder_chart(self):
         doc = self._active_doc()
         if not self._doc_has_wcs(doc):
@@ -7522,47 +7535,19 @@ class AstroSuiteProMainWindow(
                 boost      = float(preset_dict.get("boost_factor", 5.0))
                 mask_gamma = float(preset_dict.get("mask_gamma", 1.0))
                 iters      = int(preset_dict.get("iterations", 2))
+                amount     = float(preset_dict.get("amount", 1.0))
 
-                # Prefer helper if it exists (handles masks / blending)
-                if hasattr(self, "_apply_wavescale_dark_enhance_preset_to_doc"):
-                    self._apply_wavescale_dark_enhance_preset_to_doc(base_doc, {
-                        "n_scales": n_scales,
-                        "boost_factor": boost,
-                        "mask_gamma": mask_gamma,
-                        "iterations": iters,
-                    })
-                else:
-                    # Fallback: direct compute, similar to _handle_command_drop
-                    from setiastro.saspro.wavescalede import compute_wavescale_dse
-                    import numpy as np
-
-                    img = np.asarray(getattr(base_doc, "image", None), dtype=np.float32)
-                    if img.size:
-                        mx = float(np.nanmax(img))
-                        if np.isfinite(mx) and mx > 1.0:
-                            img = img / mx
-                    img = np.clip(img, 0.0, 1.0).astype(np.float32, copy=False)
-
-                    out, _ = compute_wavescale_dse(
-                        img,
-                        n_scales=n_scales,
-                        boost_factor=boost,
-                        mask_gamma=mask_gamma,
-                        iterations=iters,
-                    )
-                    out = np.clip(out, 0.0, 1.0).astype(np.float32, copy=False)
-
-                    if hasattr(base_doc, "set_image"):
-                        base_doc.set_image(out, step_name="WaveScale Dark Enhancer")
-                    else:
-                        base_doc.image = out
+                # The same runner a shortcut drop uses (active mask, Amount, mono
+                # shape), as WaveScale HDR's replay-on-base does above.
+                from setiastro.saspro.wavescalede_preset import run_wavescalede_via_preset
+                run_wavescalede_via_preset(self, preset_dict, target_doc=base_doc)
 
                 try:
                     self._log(
                         f"[Replay] WaveScale Dark Enhancer applied to base of "
                         f"'{target_sw.windowTitle()}' "
                         f"(n_scales={n_scales}, boost={boost}, "
-                        f"gamma={mask_gamma}, iter={iters})"
+                        f"gamma={mask_gamma}, iter={iters}, amount={amount})"
                     )
                 except Exception:
                     pass
@@ -8776,7 +8761,11 @@ class AstroSuiteProMainWindow(
                 mg = float(pp.get("mask_gamma", 5.0))
             except Exception:
                 mg = 5.0
-            self._log(f"Ran WaveScale HDR (n_scales={ns}, compression={comp:.2f}, mask_gamma={mg:.2f})")
+            try:
+                amt = float(pp.get("amount", 1.0))
+            except Exception:
+                amt = 1.0
+            self._log(f"Ran WaveScale HDR (n_scales={ns}, compression={comp:.2f}, mask_gamma={mg:.2f}, amount={amt:.2f})")
             return
 
         if cid == "wavescale_dark_enhance":
@@ -8790,7 +8779,9 @@ class AstroSuiteProMainWindow(
                 try: mg = float(pp.get("mask_gamma", 1.0))
                 except Exception: mg = 1.0
                 it   = int(pp.get("iterations", 2))
-                self._log(f"Ran WaveScale Dark Enhancer (n_scales={ns}, boost={bf:.2f}, mask_gamma={mg:.2f}, iters={it})")
+                try: amt = float(pp.get("amount", 1.0))
+                except Exception: amt = 1.0
+                self._log(f"Ran WaveScale Dark Enhancer (n_scales={ns}, boost={bf:.2f}, mask_gamma={mg:.2f}, iters={it}, amount={amt:.2f})")
             except Exception as e:
                 
                 QMessageBox.warning(self, self.tr("WaveScale Dark Enhancer"), self.tr("Apply failed:\n{0}").format(e))
@@ -8866,76 +8857,6 @@ class AstroSuiteProMainWindow(
 
             except Exception as e:
                 QMessageBox.warning(self, self.tr("Preset apply failed"), str(e))
-            return
-
-        if cid == "wavescale_hdr":
-            # (unchanged block)
-            from setiastro.saspro.wavescale_hdr import compute_wavescale_hdr
-            try:
-                img = np.asarray(doc.image, dtype=np.float32)
-                if img.ndim == 2:
-                    base_rgb = np.repeat(img[:, :, None], 3, axis=2); was_mono, mono_shape = True, img.shape
-                elif img.ndim == 3 and img.shape[2] == 1:
-                    base_rgb = np.repeat(img, 3, axis=2); was_mono, mono_shape = True, img.shape
-                else:
-                    base_rgb = img[:, :, :3]; was_mono, mono_shape = False, None
-
-                n_scales = int(preset.get("n_scales", 5))
-                compression_factor = float(preset.get("compression_factor", 1.5))
-                mask_gamma = float(preset.get("mask_gamma", 5.0))
-
-                transformed, mask = compute_wavescale_hdr(
-                    np.clip(base_rgb, 0, 1),
-                    n_scales=n_scales, compression_factor=compression_factor, mask_gamma=mask_gamma
-                )
-                m3 = np.repeat(mask[..., None], 3, axis=2)
-                blended = base_rgb * (1.0 - m3) + transformed * m3
-
-                if was_mono:
-                    out = np.mean(blended, axis=2, dtype=np.float32)
-                    if len(mono_shape) == 3 and mono_shape[2] == 1:
-                        out = out[:, :, None]
-                else:
-                    out = blended
-
-                out = np.clip(out, 0.0, 1.0).astype(np.float32, copy=False)
-                if hasattr(doc, "set_image"): doc.set_image(out, step_name="WaveScale HDR")
-                else: doc.image = out
-
-                self._log(f"WaveScale HDR applied to '{target_sw.windowTitle()}' (n_scales={n_scales}, comp={compression_factor}, gamma={mask_gamma})")
-            except Exception as e:
-                QMessageBox.warning(self, self.tr("WaveScale HDR"), self.tr("Preset apply failed:\n{0}").format(e))
-            return
-
-        if cid == "wavescale_dark_enhance":
-            n_scales     = int(preset.get("n_scales", 6))
-            boost_factor = float(preset.get("boost_factor", 5.0))
-            mask_gamma   = float(preset.get("mask_gamma", 1.0))
-            iterations   = int(preset.get("iterations", 2))
-            try:
-                if hasattr(self, "_apply_wavescale_dark_enhance_preset_to_doc"):
-                    self._apply_wavescale_dark_enhance_preset_to_doc(doc, {
-                        "n_scales": n_scales, "boost_factor": boost_factor,
-                        "mask_gamma": mask_gamma, "iterations": iterations,
-                    })
-                else:
-                    from setiastro.saspro.wavescalede import compute_wavescale_dse
-                    img = np.asarray(doc.image, dtype=np.float32)
-                    if img.size:
-                        mx = float(np.nanmax(img))
-                        if np.isfinite(mx) and mx > 1.0:
-                            img = img / mx
-                    img = np.clip(img, 0.0, 1.0).astype(np.float32, copy=False)
-                    out, _ = compute_wavescale_dse(
-                        img, n_scales=n_scales, boost_factor=boost_factor,
-                        mask_gamma=mask_gamma, iterations=iterations
-                    )
-                    out = np.clip(out, 0.0, 1.0).astype(np.float32, copy=False)
-                    if hasattr(doc, "set_image"): doc.set_image(out, step_name="WaveScale Dark Enhance")
-                    else: doc.image = out
-                self._log(f"WaveScale Dark Enhancer applied to '{target_sw.windowTitle()}' (n_scales={n_scales}, boost={boost_factor}, gamma={mask_gamma}, iter={iterations})")
-            except Exception as e:
-                QMessageBox.warning(self, self.tr("WaveScale Dark Enhancer"), self.tr("Preset apply failed:\n{0}").format(e))
             return
 
         if cid == "clahe":
@@ -9308,15 +9229,6 @@ class AstroSuiteProMainWindow(
             except Exception as e:
                 QMessageBox.warning(self, self.tr("Plate Solver"), self.tr("Plate solve failed:\n{0}").format(e))
             self._hdr_refresh_timer.start(0)
-            return
-        if cid == "star_align":
-            # For alignment we need user choice of source/target, so open the dialog.
-            # (We map DnD -> QAction via reg("star_align", self.act_star_align) already,
-            # but keep this for parity with your explicit cid switch.)
-            try:
-                self._open_stellar_alignment()
-            except Exception as e:
-                QMessageBox.critical(self, self.tr("Stellar Alignment"), self.tr("Unhandled error:\n{0}").format(e))
             return
         if cid == "star_register":
             try:
@@ -9925,7 +9837,9 @@ class AstroSuiteProMainWindow(
 
     # --- Command Search (palette) ----------------------------------------
     def _strip_menu_text(self, s: str) -> str:
-        return s.replace("&", "").replace("...", "").strip()
+        # "&&" is a literal & ("Variable Stars && Exoplanets"); a lone & a mnemonic.
+        s = s.replace("&&", "\0").replace("&", "").replace("\0", "&")
+        return s.replace("...", "").strip()
 
     # --- Command palette helpers (safe: no receivers/emit on Qt signals) ---
 
@@ -11771,13 +11685,22 @@ class AstroSuiteProMainWindow(
                 docs.append(d)
 
         edited = [d for d in docs if self._document_has_edits(d)]
-        # If user has disabled exit confirmation (optional setting, but default is confirm)
-        confirm = True 
-        
+        # A tool's result (Perfect Palette Picker, RGB Combination, a duplicate
+        # ...) is in memory only until it is saved, edited or not.
+        never_saved = [d for d in docs if not getattr(d, "saved_to_file", True)]
+        # "Always ask before exiting" (Preferences, or the box in this dialog).
+        # Off, it still asks when something would be lost: on exit the views
+        # close without their own unsaved-edits question (_force_close_all),
+        # so this dialog is the only one that catches unsaved images.
+        always_ask = self.settings.value("ui/confirm_exit", True, type=bool)
+        confirm = True
+
         restarting = getattr(self, "_relaunch_on_exit", False)
         mgr = getattr(self, "_setup_manager", None)
         installing = list(mgr.jobs) if mgr is not None else []
         if restarting and not docs and not installing:
+            confirm = False
+        elif not always_ask and not edited and not never_saved and not installing:
             confirm = False
 
         if confirm:
@@ -11794,6 +11717,8 @@ class AstroSuiteProMainWindow(
                 detail.append(self.tr("Open images:") + f" {len(docs)}")
             if edited:
                 detail.append(self.tr("Edited since open:") + f" {len(edited)}")
+            if never_saved:
+                detail.append(self.tr("Never saved:") + f" {len(never_saved)}")
             if detail:
                 msg += "\n\n" + "\n".join(detail)
 
@@ -11807,6 +11732,15 @@ class AstroSuiteProMainWindow(
             )
             mbox.setDefaultButton(QMessageBox.StandardButton.No)
             mbox.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
+            dont_ask = None
+            if always_ask:
+                # Parented to the box: PyQt's setCheckBox doesn't hand the checkbox
+                # over, so a parentless one is freed when this returns and the box
+                # (a child of the window) is left pointing at it -- the next style
+                # change, e.g. Preferences > OK, then crashes.
+                dont_ask = QCheckBox(self.tr("Don't ask again unless there are unsaved images"), mbox)
+                dont_ask.setToolTip(self.tr("Preferences > Always ask before exiting turns it back on."))
+                mbox.setCheckBox(dont_ask)
             mbox.raise_()
             mbox.activateWindow()
             btn = mbox.exec()
@@ -11816,6 +11750,9 @@ class AstroSuiteProMainWindow(
                 self._shutting_down = False
                 self._relaunch_on_exit = False
                 return
+            if dont_ask is not None and dont_ask.isChecked():
+                self.settings.setValue("ui/confirm_exit", False)
+                self.settings.sync()
 
         # --- User confirmed (or no confirm needed) ---
         # Start Fade Out Animation
@@ -11911,6 +11848,12 @@ class AstroSuiteProMainWindow(
             # part way, and Qt aborts if its thread is destroyed running.
             import logging
             logging.shutdown()
+            try:
+                # os._exit skips atexit, where the undo swap folder is removed.
+                from setiastro.saspro.swap_manager import get_swap_manager
+                get_swap_manager().cleanup_all()
+            except Exception:
+                pass
             os._exit(0)
 
 # CheatSheet dialog and helper functions imported from setiastro.saspro.cheat_sheet

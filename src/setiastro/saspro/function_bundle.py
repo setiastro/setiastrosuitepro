@@ -486,10 +486,15 @@ class FunctionBundleDialog(QDialog):
         row = QHBoxLayout()
         row.addWidget(self.btn_new); row.addWidget(self.btn_dup); row.addWidget(self.btn_del)
         row.addStretch(1)
-        from setiastro.saspro.shortcuts import ShortcutGrip
-        row.addWidget(ShortcutGrip("function_bundles", self))
-        row.addWidget(make_help_button("function_bundles", self))
         left.addLayout(row)
+        # Grip + help: their own row at the bottom of the left column
+        from setiastro.saspro.shortcuts import ShortcutGrip
+        grip_row = QHBoxLayout()
+        grip_row.setContentsMargins(0, 0, 0, 0)
+        grip_row.addWidget(ShortcutGrip("function_bundles", self))
+        grip_row.addStretch(1)
+        grip_row.addWidget(make_help_button("function_bundles", self))
+        left.addLayout(grip_row)
 
         right = QVBoxLayout()
         right.addWidget(QLabel(self.tr("Steps")))

@@ -11,7 +11,7 @@ normalize_command_id() passes any unknown id through unchanged (lower-cased),
 so tools that are NOT replayable steps are intentionally omitted here:
   - viewers / analysis:  histogram, psf_viewer, image_peeker, magnitude_tool,
     snr_tool, dither_analysis, isophote, whats_in_my_sky, whats_in_my_image,
-    finder_chart, atlas, exo_detector, supernova_hunter
+    finder_chart, atlas, exo_detector, supernova_hunter, lunar_solver
   - capture / stacking:  blink, live_stacking, quick_stack, stacking_suite,
     planetary_stacker
   - project / view I/O:  open, save_as, checkpoint_save, undo, redo,

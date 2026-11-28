@@ -42,7 +42,8 @@ that prevents noise amplification in flat areas. In astrophotography:
 pulls out texture in dust lanes, loosens nebula filaments from their
 background, and reveals subtle brightness variation in galaxy arms
 without the blown highlights that straight histogram equalization
-would produce. SASpro's take wraps OpenCV's CLAHE implementation
+would produce. SASpro's take is OpenCV's CLAHE algorithm without
+its 8-bit output steps (&sect;&nbsp;10.1),
 with a pixel-based tile-size slider (more intuitive than tile count),
 a global blend slider for strength control, document-mask
 integration, and live preview.</p>
@@ -155,8 +156,8 @@ pre-seeded with those values.</p>
 converted to Lab for L*-only processing; mono processed directly.</p>
 
 <h3>10.1 CLAHE algorithm (OpenCV)</h3>
-<p>SASpro calls <code>cv2.createCLAHE(clipLimit,&nbsp;tileGridSize)</code>
-with the slider values. Per tile, OpenCV builds the local 256-bin
+<p>This is OpenCV's CLAHE, <code>cv2.createCLAHE(clipLimit,&nbsp;tileGridSize)</code>,
+with the slider values. Per tile, it builds the local 256-bin
 histogram <code>h(v)</code>, clips bins above the limit:</p>
 <div class="matheq">h'(v) \;=\; \min(h(v),\;C)</div>
 <p>and redistributes the clipped excess uniformly across all bins
@@ -169,6 +170,22 @@ the per-tile transform:</p>
 the four nearest tile transforms, which keeps tile boundaries from
 showing as visible seams:</p>
 <div class="matheq">T_{\mathrm{eff}}(x,y) \;=\; \sum_{\mathrm{4 tiles}} w_k(x,y) \,T_k(v)</div>
+<p><b>16-bit CLAHE plane</b> (on by default). OpenCV's own 16-bit
+CLAHE is not used: once a tile holds more than about 32,768 pixels
+it hands the clipped excess back into the darker half of the
+histogram only, so neighbouring tiles brighten by different amounts
+and the background breaks up into tile-sized blotches, and its clip
+limit barely changes the result. Instead SASpro builds exactly the
+8-bit histograms, clipping and transforms above, keeps <code>T</code>
+unrounded, and reads each pixel's own value off it by linear
+interpolation between the 256 levels:</p>
+<div class="matheq">T(v) \;=\; (1 - f)\,T(k) \;+\; f\,T(k+1)\,,\qquad k = \lfloor 255\,v \rfloor,\quad f = 255\,v - k</div>
+<p>So the result looks and responds to the clip limit like 8-bit
+mode, without its 256 output levels, which posterise smooth
+backgrounds on 32-bit data. SASpro 2.0.1 and earlier used OpenCV's
+16-bit CLAHE here, so the same settings now give a stronger result:
+lower the clip limit if a saved setting looks too strong. Untick the
+box to run OpenCV's 8-bit CLAHE exactly as before.</p>
 <p>For colour inputs, SASpro converts the image to CIE Lab via
 OpenCV's <code>COLOR_RGB2LAB</code>, applies CLAHE only to the L*
 channel, and converts back &mdash; so chroma (a*, b*) is preserved
@@ -227,9 +244,11 @@ result rather than a full-strength CLAHE output.</p>
 <div class="credit">
 <b>Credits.</b> The core <b>CLAHE algorithm</b> is Karel Zuiderveld's
 &ldquo;Contrast Limited Adaptive Histogram Equalisation&rdquo;
-(<i>Graphics Gems IV</i>, 1994). The implementation used here is
+(<i>Graphics Gems IV</i>, 1994). The 8-bit mode is
 <b>OpenCV's</b> <code>cv2.createCLAHE</code> with its bilinear tile
-interpolation. SASpro's additions are the pixel-based tile-size
+interpolation; the 16-bit plane is SASpro's own implementation of
+the same algorithm with continuous output. SASpro's additions are
+that 16-bit plane, the pixel-based tile-size
 slider with its automatic conversion to OpenCV's tile-count
 parameter, the global Blend Amount slider, the live-preview
 pipeline with its 250&nbsp;ms debouncing, document-mask integration

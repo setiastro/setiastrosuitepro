@@ -447,8 +447,6 @@ class AtlasDialog(QDialog):
         layout.addWidget(self._no_wcs_label)
         # Buttons
         btn_row = QHBoxLayout()
-        from setiastro.saspro.shortcuts import ShortcutGrip
-        btn_row.addWidget(ShortcutGrip("atlas", self))
         self._atlas_btn = QPushButton(self.tr("View Atlas"))
         self._atlas_btn.setStyleSheet(
             "QPushButton { background: #1a2a4a; color: #7a9fff; padding: 6px 18px; "
@@ -479,6 +477,13 @@ class AtlasDialog(QDialog):
         self._share_btn.clicked.connect(self._on_share)
         btn_row.addWidget(self._share_btn)
         layout.addLayout(btn_row)
+        # Grip: its own row at the bottom left
+        from setiastro.saspro.shortcuts import ShortcutGrip
+        grip_row = QHBoxLayout()
+        grip_row.setContentsMargins(0, 0, 0, 0)
+        grip_row.addWidget(ShortcutGrip("atlas", self))
+        grip_row.addStretch(1)
+        layout.addLayout(grip_row)
         self._update_share_state()
 
     def _open_gallery_page(self):

@@ -1220,6 +1220,14 @@ class DitherAnalysisWindow(QWidget):
         self._stats_text.setMinimumHeight(180)
         sv.addWidget(self._stats_text)
         lv.addWidget(grp_stats, stretch=1)
+        # Grip + help: their own row at the bottom of the left column (above the footer)
+        from setiastro.saspro.shortcuts import ShortcutGrip
+        grip_row = QHBoxLayout()
+        grip_row.setContentsMargins(0, 0, 0, 0)
+        grip_row.addWidget(ShortcutGrip("dither_analysis", self))
+        grip_row.addStretch(1)
+        grip_row.addWidget(make_help_button("dither_analysis", self))
+        lv.addLayout(grip_row)
 
         footer = QLabel(
             '<a href="https://www.setiastro.com" style="color:#e94560;">'
@@ -1279,9 +1287,6 @@ class DitherAnalysisWindow(QWidget):
         ctrl_row.addWidget(self._btn_show_arcsec)
         ctrl_row.addWidget(self._btn_show_radec)
         ctrl_row.addStretch(1)
-        from setiastro.saspro.shortcuts import ShortcutGrip
-        ctrl_row.addWidget(ShortcutGrip("dither_analysis", self))
-        ctrl_row.addWidget(make_help_button("dither_analysis", self))
 
         rv.addLayout(ctrl_row)
 

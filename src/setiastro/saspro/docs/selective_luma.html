@@ -61,14 +61,20 @@ the same freehand lasso, imported-mask, and live-preview niceties
 as Selective Color.</p>
 
 <h2>1. Layout</h2>
-<p>Same two-pane split as Selective Color: a scrollable left column
-with the Luminance Mask group, three adjustment groups
-(CMY&nbsp;/&nbsp;RGB&nbsp;/&nbsp;LSC), live-preview toggle and action
-buttons; a right column with zoom toolbar, help banner, large
-preview, picked-luminance readout, and region-mask readout. Window
-size, splitter position, small-preview toggle, live-preview toggle,
-mask-overlay toggle, and current zoom are all persisted to QSettings
-under the <code>sellum/</code> namespace.</p>
+<p>Same two-pane split as Selective Color: a left column that
+scrolls up and down (never sideways: it is always as wide as its
+controls) with the Luminance Mask group and three adjustment groups
+(CMY&nbsp;/&nbsp;RGB&nbsp;/&nbsp;LSC), and Reset, Export Mask, Apply as
+New Document and Apply along the bottom; a right column with zoom
+toolbar, the preview toggles (Show mask overlay, Preview changed image,
+Small-sized Preview), help banner, large preview, picked-luminance
+readout, and the region-mask readout with its Clear Region Mask
+button.</p>
+<p>The preview opens fitted to its area and stays fitted as you resize
+the window or move the splitter, until you zoom yourself. Fit goes back
+to following the window. Window size, splitter position, small-preview
+toggle, live-preview toggle and mask-overlay toggle are persisted to
+QSettings under the <code>sellum/</code> namespace.</p>
 
 <h2>2. Building a luminance mask</h2>
 
@@ -96,7 +102,7 @@ arc between the handles shows your current luminance range. A small
 orange marker appears when you click to sample a pixel (see
 &sect;&nbsp;3).</p>
 
-<h3>2.3 Lum. low / Lum. high sliders</h3>
+<h3>2.3 Low / High sliders</h3>
 <p>0&ndash;255 integer sliders paired with 0.0&ndash;1.0 double spinboxes.
 Edit either side of each pair and the other updates in step. Both
 also mirror the Luminance Wheel.</p>
@@ -120,7 +126,7 @@ tapers off through smoothstep curves outside. For a narrow band this
 becomes a bell curve; for a wide band it keeps a soft-shouldered
 plateau. The result removes iso-luminance contours
 (&ldquo;blobbiness&rdquo;) that pure threshold masks produce. See
-&sect;&nbsp;12.2.</p>
+&sect;&nbsp;12.2. Soft is on by default.</p>
 <p>Special case: a band that reaches a pure endpoint
 (<code>lo&nbsp;=&nbsp;0.0</code> or <code>hi&nbsp;=&nbsp;1.0</code>)
 keeps that endpoint fully in at 1.0 regardless of smoothness, so a
@@ -186,7 +192,7 @@ outline marks the active region in the preview until you click the
 </div>
 
 <h3>3.1 Small-sized Preview (fast)</h3>
-<p>The toggle at the top-left controls whether the preview path
+<p>The toggle above the preview controls whether the preview path
 operates on a downsampled copy (longest side &le; 1200&nbsp;px) or
 full resolution. On by default; always off for the Apply /
 Apply-as-New / Export Mask paths.</p>
@@ -247,14 +253,14 @@ time).</p>
 
 <h3>6.2 &#x21ba; Reset button</h3>
 <p>Full reset: luminance range back to the Shadows preset
-(0.00&ndash;0.25), smoothness 0.05, invert off, soft off, blur 0,
+(0.00&ndash;0.25), smoothness 0.05, invert off, soft on, blur 5,
 mask overlay off, all adjustment sliders at 0.0, intensity 1.0,
 Chroma mode selected. Loaded image, imported mask, and lasso region
 are preserved.</p>
 
 <h3>6.3 &times; Clear Region Mask</h3>
 <p>Removes any lasso region constraint. Enabled only when a region
-is active.</p>
+is active. It sits under the preview, beside the region readout.</p>
 
 <h2>7. Applying the result</h2>
 <ul>

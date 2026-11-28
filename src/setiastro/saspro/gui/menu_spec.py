@@ -42,7 +42,8 @@ MENU_CONTENTS: dict[str, List[str]] = {
         "act_exit",
     ],
     "edit": [
-        "act_undo", "act_redo", "act_copy", "act_paste",
+        # History Explorer had its own top-level History menu before.
+        "act_undo", "act_redo", "act_history_explorer", "act_copy", "act_paste",
         "act_mono_to_rgb", "act_rgb_to_mono", "act_swap_rb",
     ],
     "display": [
@@ -96,7 +97,7 @@ MENU_CONTENTS: dict[str, List[str]] = {
         "act_mosaic_master", "act_surface_mosaic",
     ],
     "analysis": [
-        "act_plate_solve", "act_unwarp", "act_blink", "act_psf_viewer",
+        "act_plate_solve", "act_unwarp", "act_lunar_solver", "act_blink", "act_psf_viewer",
         "act_image_peeker", "act_dither_analysis", "act_magnitude", "act_snr",
         "act_isophote", "act_exo_detector", "act_supernova_hunter",
         # What's In My... was a top-level menu until 2.1.
@@ -105,9 +106,6 @@ MENU_CONTENTS: dict[str, List[str]] = {
     "masks": [
         "act_create_mask", "act_apply_mask", "act_remove_mask",
         "act_show_mask", "act_hide_mask", "act_invert_mask",
-    ],
-    "history": [
-        "act_history_explorer",
     ],
     # A submenu of View since 2.1 (built in menu_mixin); kept as its own
     # Icon Cheat Sheet group.
@@ -222,7 +220,7 @@ SUBMENUS: dict[str, List[Tuple[str, List[str]]]] = {
     ],
     "analysis": [
         (QT_TRANSLATE_NOOP("AstroSuiteProMainWindow", "Astrometry"), [
-            "act_plate_solve", "act_unwarp",
+            "act_plate_solve", "act_unwarp", "act_lunar_solver",
         ]),
         (QT_TRANSLATE_NOOP("AstroSuiteProMainWindow", "Inspection"), [
             "act_blink", "act_psf_viewer", "act_image_peeker",
@@ -270,19 +268,19 @@ MENU_TITLES: dict[str, str] = {
     "stacking": QT_TRANSLATE_NOOP("AstroSuiteProMainWindow", "Stacking"),
     "analysis": QT_TRANSLATE_NOOP("AstroSuiteProMainWindow", "Analysis"),
     "masks": QT_TRANSLATE_NOOP("AstroSuiteProMainWindow", "Masks"),
-    "history": QT_TRANSLATE_NOOP("AstroSuiteProMainWindow", "History"),
     "shortcuts": QT_TRANSLATE_NOOP("AstroSuiteProMainWindow", "Shortcuts"),
     "view": QT_TRANSLATE_NOOP("AstroSuiteProMainWindow", "View"),
     "workflows": QT_TRANSLATE_NOOP("AstroSuiteProMainWindow", "Workflows"),
     "settings": QT_TRANSLATE_NOOP("AstroSuiteProMainWindow", "Settings"),
-    "about": QT_TRANSLATE_NOOP("AstroSuiteProMainWindow", "About"),
+    # The menu is titled Help (it was About on Windows/Linux); the key stays.
+    "about": QT_TRANSLATE_NOOP("AstroSuiteProMainWindow", "Help"),
 }
 
 # Order the Icon Cheat Sheet walks the menus in.
 CHEAT_SHEET_ORDER: List[str] = [
     "file", "edit", "display", "functions", "smart_tools", "tools",
     "geometry", "stacking", "analysis", "masks",
-    "workflows", "view", "history", "shortcuts", "settings", "about",
+    "workflows", "view", "shortcuts", "settings", "about",
 ]
 
 
@@ -302,7 +300,7 @@ def _resolve(window, attrs: Iterable[str]) -> List:
 
 def _label_of(act) -> str:
     try:
-        return (act.text() or "").replace("&", "").strip()
+        return (act.text() or "").replace("&&", "\0").replace("&", "").replace("\0", "&").strip()
     except Exception:
         return ""
 

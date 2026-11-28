@@ -26,6 +26,8 @@ from setiastro.saspro.widgets.wavelet_utils import (
     lab_to_rgb as _lab_to_rgb,
     run_row_bands as _run_row_bands,
     B3_KERNEL as _B3,
+    _XYZ_TO_RGB_MATRIX,
+    _D65_WHITE,
 )
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -40,6 +42,159 @@ def _mask_from_L(L: np.ndarray, gamma: float) -> np.ndarray:
 
 def _apply_dim_curve(rgb: np.ndarray, gamma: float) -> np.ndarray:
     return np.power(np.clip(rgb, 0.0, 1.0), gamma, dtype=np.float32)
+
+
+# ── Headroom limiter ────────────────────────────────────────────────────────
+# The detail boost can push a bright patch's L past what its colour can show
+# (L > 100, or a linear RGB channel > 1 at the pixel's own a, b). lab_to_rgb
+# then clips it flat: a blown, often hue-shifted blob among surroundings the
+# tool dimmed and opened up. Where that would happen, a smooth gain map g scales
+# the ADDED detail back toward the original L, L' = L0 + g * (L - L0), just far
+# enough that nothing leaves the gamut, so the structure inside a limited patch
+# is scaled together instead of squashed onto the ceiling. (A per-pixel gain, or
+# any per-pixel soft clip, lands every overshooting pixel on or near the ceiling:
+# the same flat blob, one notch darker. The base is L0, not the median-aligned
+# L: that alignment alone lifts near-white star rims to white.)
+# g lives on a 4 px grid: block minimum of each pixel's requirement, a 2-cell
+# min-filter, a 1-cell blur, a bilinear upsample (1 cell). Blur + upsample reach
+# no further than the min-filter, so g never exceeds any pixel's requirement.
+# Pixels with no overshoot nearby keep g = 1 and are bit-identical.
+_HEADROOM_BLOCK = 4       # px per gain-map cell
+_HEADROOM_ERODE = 2       # cells: min-filter radius (the limiter reaches ~8-12 px)
+_HEADROOM_SAT_EPS = 0.05  # L units: originals this close to their ceiling are
+                          # already saturated (star cores) and don't steer g
+_CEILING_ITERS = 12
+_CEILING_CHUNK = 1 << 20
+
+
+def _gamut_ceiling_L(a: np.ndarray, b: np.ndarray, lo: np.ndarray, hi: np.ndarray,
+                     iters: int = _CEILING_ITERS) -> np.ndarray:
+    """Largest L in [lo, hi] at which (L, a, b) is still displayable: every
+    linear RGB channel <= 1 (both lab_to_rgb paths agree on that test; sRGB
+    encoding maps 1 to 1). lo should be displayable (the original L). Returns
+    hi where hi itself fits. float64 1-D. Bisection: (hi - lo) / 2**iters."""
+    M = _XYZ_TO_RGB_MATRIX.astype(np.float64)
+    wx, wy, wz = (float(v) for v in _D65_WHITE)
+    d = 6.0 / 29.0
+
+    def finv(t):
+        return np.where(t > d, t * t * t, 3.0 * d * d * (t - 4.0 / 29.0))
+
+    def fits(L, ac, bc):
+        fy = (L + 16.0) / 116.0
+        X = wx * finv(fy + ac / 500.0)
+        Y = wy * finv(fy)
+        Z = wz * finv(fy - bc / 200.0)
+        ok = M[0, 0] * X + M[0, 1] * Y + M[0, 2] * Z <= 1.0
+        ok &= M[1, 0] * X + M[1, 1] * Y + M[1, 2] * Z <= 1.0
+        ok &= M[2, 0] * X + M[2, 1] * Y + M[2, 2] * Z <= 1.0
+        return ok
+
+    out = np.empty(a.shape, dtype=np.float64)
+
+    def _band(sl):
+        # numpy releases the GIL: bands of candidates run in parallel
+        for s in range(sl.start, sl.stop, _CEILING_CHUNK):
+            e = min(sl.stop, s + _CEILING_CHUNK)
+            ac, bc = a[s:e], b[s:e]
+            lo_c, hi_c = lo[s:e].copy(), hi[s:e].copy()
+            top_ok = fits(hi_c, ac, bc)
+            for _ in range(iters):
+                mid = 0.5 * (lo_c + hi_c)
+                ok = fits(mid, ac, bc)
+                lo_c = np.where(ok, mid, lo_c)
+                hi_c = np.where(ok, hi_c, mid)
+            out[s:e] = np.where(top_ok, hi[s:e], lo_c)
+    _run_row_bands(_band, a.size)
+    return out
+
+
+def _headroom_gain(H: int, W: int, ys: np.ndarray, xs: np.ndarray, gi: np.ndarray) -> np.ndarray:
+    """Gain map from sparse requirements gi at (ys, xs), everything else 1.
+    Returned padded to whole cells (Hc*4 x Wc*4, float32); index it with the
+    image's own (y, x)."""
+    import cv2
+    s = _HEADROOM_BLOCK
+    Hc, Wc = -(-H // s), -(-W // s)
+    gc = np.ones((Hc, Wc), dtype=np.float32)
+    np.minimum.at(gc, (ys // s, xs // s), gi.astype(np.float32))
+    k = 2 * _HEADROOM_ERODE + 1
+    gc = cv2.erode(gc, cv2.getStructuringElement(cv2.MORPH_RECT, (k, k)))  # border: neutral
+    gc = cv2.blur(gc, (3, 3), borderType=cv2.BORDER_REPLICATE)
+    # exact x4: pixel 4B+j samples cells B-1..B+1 only
+    return cv2.resize(gc, (Wc * s, Hc * s), interpolation=cv2.INTER_LINEAR)
+
+
+def _limit_headroom(rgb: np.ndarray, lab: np.ndarray, L0: np.ndarray, Lb: np.ndarray) -> int:
+    """In place on rgb (= lab_to_rgb(lab) with L = clip(Lb, 0, 100)): re-convert
+    only the pixels the limiter changes. L0 is the original L, Lb the boosted,
+    unclipped L (used as scratch). Returns how many pixels were re-converted."""
+    H, W = L0.shape
+    cand = np.empty((H, W), dtype=bool)
+
+    def _cand_rows(sl):
+        r, c = rgb[sl], cand[sl]
+        np.greater(Lb[sl], 100.0, out=c)
+        c |= r[..., 0] >= 1.0
+        c |= r[..., 1] >= 1.0
+        c |= r[..., 2] >= 1.0
+    _run_row_bands(_cand_rows, H)
+    idx = np.flatnonzero(cand)
+    if idx.size == 0:
+        return 0
+
+    labf = lab.reshape(-1, 3)
+    L0f, Lbf = L0.ravel(), Lb.ravel()
+    L0i = L0f[idx].astype(np.float64)
+    Lbi = Lbf[idx].astype(np.float64)
+    ab = np.take(labf, idx, axis=0)
+    # the original was displayable at this a, b: never cap below it
+    cap = np.maximum(_gamut_ceiling_L(ab[:, 1].astype(np.float64), ab[:, 2].astype(np.float64),
+                                      L0i, np.clip(Lbi, L0i, 100.0)), L0i)
+    del ab
+    need = (Lbi > cap) & (L0i < cap - _HEADROOM_SAT_EPS)
+    # already-saturated originals (star cores) are simply held at their ceiling;
+    # everything that needs limiting stays under it through g <= its requirement
+    sat = (Lbi > cap) & ~need
+    if sat.any():
+        Lbf[idx[sat]] = cap[sat].astype(np.float32)   # Lb is scratch from here on
+
+    gp = None
+    sel = idx
+    if need.any():
+        iy, ix = np.divmod(idx[need], W)
+        gi = (cap[need] - L0i[need]) / (Lbi[need] - L0i[need])
+        gp = _headroom_gain(H, W, iy, ix, np.clip(gi, 0.0, 1.0))
+        upd = gp[:H, :W] < 1.0
+        upd.ravel()[idx] = True
+        sel = np.flatnonzero(upd)
+        del upd
+
+    n = sel.size
+    Ls = Lbf[sel]                        # a copy (fancy index)
+    if gp is not None:
+        sy, sx = np.divmod(sel, W)
+        L0s = L0f[sel]
+        Ls -= L0s
+        Ls *= gp.ravel()[sy * gp.shape[1] + sx]
+        Ls += L0s
+        del L0s, gp
+    np.clip(Ls, 0.0, 100.0, out=Ls)
+
+    # convert as a (rows, 1024, 3) block so the numba kernels run rows in parallel
+    cols = 1024
+    rows = -(-n // cols)
+    blk = np.zeros((rows * cols, 3), dtype=np.float32)
+    np.take(labf, sel, axis=0, out=blk[:n])
+    blk[:n, 0] = Ls
+    conv = _lab_to_rgb(blk.reshape(rows, cols, 3)).reshape(-1, 3)[:n]
+    if rgb.flags.c_contiguous:
+        rgb.reshape(-1, 3)[sel] = conv
+    else:
+        ys, xs = np.divmod(sel, W)
+        rgb[ys, xs] = conv
+    return int(n)
+
 
 def compute_wavescale_hdr(rgb_image: np.ndarray,
                           n_scales: int = 5,
@@ -89,6 +244,8 @@ def compute_wavescale_hdr(rgb_image: np.ndarray,
     Returns (transformed_rgb, luminance_mask).
     If dim_gamma is None, uses auto gamma = 1.0 + 0.2 * n_scales.
     lab_cache: _rgb_to_lab(rgb_image) computed earlier (copied, not modified).
+    Overshoot past white is limited (_limit_headroom), never clipped; pixels
+    with no overshoot nearby are unchanged by that step.
     """
     lab = _rgb_to_lab(rgb_image) if lab_cache is None else lab_cache.copy()
     L0 = lab[..., 0].astype(np.float32, copy=True)
@@ -124,9 +281,17 @@ def compute_wavescale_hdr(rgb_image: np.ndarray,
     ratio = med0 / med1
 
     def _store_L_rows(sl):
-        lab[sl, :, 0] = np.clip(Lr[sl] * ratio, 0.0, 100.0)
+        Lr[sl] *= ratio                  # Lr is the boosted L, unclipped, from here on
+        lab[sl, :, 0] = np.clip(Lr[sl], 0.0, 100.0)
     _run_row_bands(_store_L_rows, H)
+    scales.clear()                       # free the wavelet planes before the RGB passes
+    planes.clear()
+    residual = None
     rgb = _lab_to_rgb(lab)
+
+    # nothing may clip: where the boost would push a patch past white (or past
+    # what its colour can show), scale the added detail back (_limit_headroom)
+    _limit_headroom(rgb, lab, L0, Lr)
 
     # dimming curve
     g = (1.0 + n_scales * 0.2) if dim_gamma is None else float(dim_gamma)
@@ -173,6 +338,42 @@ def _apply_output(preview: np.ndarray, was_mono: bool, mono_shape) -> np.ndarray
             out[sl] = np.clip(preview[sl], 0.0, 1.0)
     _run_row_bands(_rows, H)
     return out
+
+
+def clamp_amount(value, default: float = 1.0) -> float:
+    """The Amount preset key as the slider holds it: [0, 1] in 0.01 steps.
+    Missing or unreadable -> default (1.0 = full effect, the pre-Amount result)."""
+    try:
+        a = float(value)
+    except (TypeError, ValueError):
+        a = float(default)
+    if not np.isfinite(a):
+        a = float(default)
+    return int(round(min(1.0, max(0.0, a)) * 100.0)) / 100.0
+
+
+def blend_amount(original: np.ndarray, result: np.ndarray, amount: float) -> np.ndarray:
+    """The Amount slider: (1 - a)*original + a*result. a = 1 returns `result`
+    itself, so a full-strength run is bit-identical to the tool before Amount
+    existed. Row bands in parallel; float32."""
+    a = float(amount)
+    if a >= 1.0:
+        return result
+    out = np.empty(result.shape, dtype=np.float32)
+    inv = np.float32(1.0 - a)
+    af = np.float32(a)
+
+    def _rows(sl):
+        np.add(original[sl] * inv, result[sl] * af, out=out[sl])
+    _run_row_bands(_rows, out.shape[0])
+    return out
+
+
+def _amount_job(original: np.ndarray, full: np.ndarray, amount: float, want_qimage: bool) -> dict:
+    """Re-blend a finished preview at a new Amount, off the GUI thread."""
+    preview = blend_amount(original, full, amount)
+    return {"preview": preview, "amount": float(amount),
+            "qimg": _rgb_to_qimage(preview) if want_qimage else None}
 
 
 def _rgb01(img: np.ndarray) -> np.ndarray:
@@ -229,9 +430,11 @@ def _mask_thumb_qimage(mask: np.ndarray, box_w: int, box_h: int) -> QImage:
 
 
 def _hdr_preview_payload(original: np.ndarray, transformed: np.ndarray, mask: np.ndarray,
-                         doc_mask_pre: np.ndarray | None, thumb_wh, want_qimage: bool) -> dict:
+                         doc_mask_pre: np.ndarray | None, thumb_wh, want_qimage: bool,
+                         amount: float = 1.0) -> dict:
     """What _on_finished used to build on the GUI thread: the doc-mask-combined
-    mask, the blended preview, and their display images."""
+    mask, the blended preview, and their display images. "full" is the result
+    at Amount 1; "preview" is it blended with the original at `amount`."""
     doc_mask = None if doc_mask_pre is None else _doc_mask_finish(doc_mask_pre, *original.shape[:2])
     # combine HDR's luminance mask with the doc's active mask (if present)
     mask_comb = mask if doc_mask is None else np.clip(mask * doc_mask, 0.0, 1.0)
@@ -242,9 +445,12 @@ def _hdr_preview_payload(original: np.ndarray, transformed: np.ndarray, mask: np
     preview = np.empty(original.shape, dtype=dt)
     for c in range(original.shape[2]):
         np.add(original[..., c] * inv, transformed[..., c] * mask_comb, out=preview[..., c])
+    shown = blend_amount(original, preview, amount)
     return {
-        "preview": preview,
-        "qimg": _rgb_to_qimage(preview) if want_qimage else None,
+        "full": preview,
+        "preview": shown,
+        "amount": float(amount),
+        "qimg": _rgb_to_qimage(shown) if want_qimage else None,
         "thumb": _mask_thumb_qimage(mask_comb, *thumb_wh) if thumb_wh else None,
         "has_doc_mask": doc_mask is not None,
     }
@@ -433,6 +639,10 @@ class WaveScaleHDRDialogPro(QDialog):
 
         self.original_rgb = img_rgb
         self.preview_rgb  = img_rgb          # never modified in place; replaced by each preview
+        self._full_rgb = None                # last preview at Amount 100% (None: no preview yet)
+        self._blend_gen = 0                  # bumped by each new preview / Reset; stale re-blends drop
+        self._blend_busy = False
+        self._blend_pending = False
 
         # off-GUI-thread state: Lab/L/mask cache, the two view pixmaps, mask jobs
         self._mask_cache = {}
@@ -512,14 +722,32 @@ class WaveScaleHDRDialogPro(QDialog):
         form.addRow(self.tr("Coarse Compression:"), _slider_row(self.s_comp, self.lbl_comp_val))
         form.addRow(self.tr("Mask Gamma:"), _slider_row(self.s_gamma, self.lbl_gamma_val))
 
+        # Amount: blend of the finished result with the original (no recompute)
+        self.s_amount = QSlider(Qt.Orientation.Horizontal); self.s_amount.setRange(0, 100); self.s_amount.setValue(100)
+        self.lbl_amount_val = QLabel()
+        _tip_amount = self.tr(
+            "Amount (0-100%)\n\n"
+            "Blends the finished result with the original image. 100% is the "
+            "full effect, 0% leaves the image unchanged.\n\n"
+            "Changing it after a Preview re-blends the preview without "
+            "recomputing. Default: 100%."
+        )
+        self.s_amount.setToolTip(_tip_amount)
+        self.lbl_amount_val.setToolTip(_tip_amount)
+        self.lbl_amount_val.setMinimumWidth(42)
+        self.lbl_amount_val.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        form.addRow(self.tr("Amount:"), _slider_row(self.s_amount, self.lbl_amount_val))
+
         # keep readouts in sync with the sliders (comp/gamma are slider value / 100)
         self.s_scales.valueChanged.connect(lambda v: self.lbl_scales_val.setText(str(int(v))))
         self.s_comp.valueChanged.connect(lambda v: self.lbl_comp_val.setText(f"{v / 100.0:.2f}"))
         self.s_gamma.valueChanged.connect(lambda v: self.lbl_gamma_val.setText(f"{v / 100.0:.2f}"))
+        self.s_amount.valueChanged.connect(lambda v: self.lbl_amount_val.setText(f"{int(v)}%"))
         # initialize the displayed values
         self.lbl_scales_val.setText(str(int(self.s_scales.value())))
         self.lbl_comp_val.setText(f"{self.s_comp.value() / 100.0:.2f}")
         self.lbl_gamma_val.setText(f"{self.s_gamma.value() / 100.0:.2f}")
+        self.lbl_amount_val.setText(f"{int(self.s_amount.value())}%")
 
         row = QHBoxLayout()
         self.btn_preview = QPushButton(self.tr("Preview"))
@@ -616,6 +844,12 @@ class WaveScaleHDRDialogPro(QDialog):
         self._mask_timer.timeout.connect(self._update_mask_from_gamma)
         self.s_gamma.valueChanged.connect(self._schedule_mask_refresh)
 
+        # Amount re-blends the last preview (debounced, off the GUI thread)
+        self._blend_timer = QTimer(self)
+        self._blend_timer.setSingleShot(True)
+        self._blend_timer.timeout.connect(self._update_amount_blend)
+        self.s_amount.valueChanged.connect(lambda _v: self._blend_timer.start(120))
+
         # show initial mask (and the image) as soon as the job is done
         self._update_mask_from_gamma()
 
@@ -631,6 +865,8 @@ class WaveScaleHDRDialogPro(QDialog):
         self.s_scales.setValue(ns)
         self.s_comp.setValue(comp_i)
         self.s_gamma.setValue(mg_i)
+        # presets made before Amount existed have no key: full effect, as they ran then
+        self.s_amount.setValue(int(round(clamp_amount(p.get("amount", 1.0)) * 100)))
         # refresh mask preview (even if window is hidden)
         self._update_mask_from_gamma()
 
@@ -641,6 +877,7 @@ class WaveScaleHDRDialogPro(QDialog):
             "n_scales": int(self.s_scales.value()),
             "compression_factor": float(self.s_comp.value()) / 100.0,
             "mask_gamma": float(self.s_gamma.value()) / 100.0,
+            "amount": float(self.s_amount.value()) / 100.0,
         }
 
     def seed_from_preset(self, p: dict | None):
@@ -814,9 +1051,12 @@ class WaveScaleHDRDialogPro(QDialog):
             self._show_preview()
 
     def _reset(self):
+        self._full_rgb = None
+        self._blend_gen += 1                # a re-blend still running is dropped
         self.s_scales.setValue(5)
         self.s_comp.setValue(150)
         self.s_gamma.setValue(500)
+        self.s_amount.setValue(100)
         self.preview_rgb = self.original_rgb
         self._pm_preview = None
         self._show_original()
@@ -838,6 +1078,7 @@ class WaveScaleHDRDialogPro(QDialog):
             doc_mask_pre=self._doc_mask_prenorm(),
             thumb_wh=None if self._headless else self._mask_box(),
             want_qimage=not self._headless,
+            amount=self._amount(),
         )
         # no parent: thread_keeper holds it, so closing the dialog mid-run is safe
         self.thread = QThread()
@@ -866,11 +1107,15 @@ class WaveScaleHDRDialogPro(QDialog):
             return
 
         # mask combine + blend + display images were done in the worker
+        self._blend_gen += 1                # an older re-blend must not land on this preview
+        self._full_rgb = payload["full"]
         self.preview_rgb = payload["preview"]
         qimg = payload.get("qimg")
         self._pm_preview = QPixmap.fromImage(qimg) if qimg is not None else None
         if not self._headless:
             self._show_preview()
+            if self._amount() != payload.get("amount"):
+                self._update_amount_blend()     # Amount moved while it computed
 
         # show the *combined* mask in the little window
         self.mask_win.setWindowTitle(
@@ -886,9 +1131,46 @@ class WaveScaleHDRDialogPro(QDialog):
         if self._headless:
             QTimer.singleShot(0, self._apply_to_doc)
 
+    def _amount(self) -> float:
+        return float(self.s_amount.value()) / 100.0
+
+    def _update_amount_blend(self):
+        """Re-blend the last preview at the current Amount. Runs in a background
+        job; a request made while one runs is queued with the then-current value."""
+        if self._headless or getattr(self, "_memory_released", False) or self._full_rgb is None:
+            return
+        if self._blend_busy:
+            self._blend_pending = True
+            return
+        self._blend_pending = False
+        self._blend_busy = True
+        self._blend_job_gen = self._blend_gen    # one job at a time, so one slot
+        job = functools.partial(_amount_job, self.original_rgb, self._full_rgb, self._amount(), True)
+        self._blend_thr = _JobThread(job)
+        self._blend_thr.done.connect(self._on_amount_blend_done)
+        start_owned_thread(self._blend_thr)
+
+    def _on_amount_blend_done(self, res, err):
+        self._blend_busy = False
+        if getattr(self, "_memory_released", False):
+            return
+        if err is not None:
+            print("WaveScale HDR amount blend error:", err)
+        if res is not None and self._blend_job_gen == self._blend_gen and self._full_rgb is not None:
+            self.preview_rgb = res["preview"]
+            self._pm_preview = QPixmap.fromImage(res["qimg"]) if res.get("qimg") is not None else None
+            if not self.btn_toggle.isChecked():
+                self._show_preview()
+        if self._blend_pending:
+            self._update_amount_blend()
+
     def _apply_to_doc(self):
+        # Amount is blended here from the full result, not read from the shown
+        # preview, so a re-blend still in flight cannot make Apply use a stale value.
+        rgb = self.preview_rgb if self._full_rgb is None else blend_amount(
+            self.original_rgb, self._full_rgb, self._amount())
         # collapse back to mono (keep original shape: 2D or H×W×1), clip to [0,1]
-        out = _apply_output(self.preview_rgb, self._was_mono, self._mono_shape)
+        out = _apply_output(rgb, self._was_mono, self._mono_shape)
         _meta = {"step_name": "WaveScale HDR",
                  "command_id": "wavescale_hdr",
                  "preset": dict(self.get_preset())}
@@ -902,11 +1184,7 @@ class WaveScaleHDRDialogPro(QDialog):
 
         # ── Build preset from current sliders ─────────────────────────
         try:
-            preset = {
-                "n_scales": int(self.s_scales.value()),
-                "compression_factor": float(self.s_comp.value()) / 100.0,
-                "mask_gamma": float(self.s_gamma.value()) / 100.0,
-            }
+            preset = dict(self.get_preset())
         except Exception:
             preset = {}
 
@@ -926,9 +1204,11 @@ class WaveScaleHDRDialogPro(QDialog):
                         ns   = int(preset.get("n_scales", 5))
                         comp = float(preset.get("compression_factor", 1.5))
                         mg   = float(preset.get("mask_gamma", 5.0))
+                        amt  = float(preset.get("amount", 1.0))
                         main._log(
                             f"[Replay] Registered WaveScale HDR as last action "
-                            f"(n_scales={ns}, compression={comp:.2f}, mask_gamma={mg:.2f})"
+                            f"(n_scales={ns}, compression={comp:.2f}, mask_gamma={mg:.2f}, "
+                            f"amount={amt:.2f})"
                         )
                 except Exception:
                     pass
@@ -942,32 +1222,9 @@ class WaveScaleHDRDialogPro(QDialog):
         except Exception:
             pass
 
-        if self._headless:
-            # The headless dialog is invisible and its runner is blocked in
-            # exec(); nothing else can ever close it, so finish here.
-            self.accept()
-            return
-
-        # Dialog stays open so user can apply to other images
-        # Refresh document reference for next operation
-        self._refresh_document_from_active()
-
-    def _refresh_document_from_active(self):
-        """
-        Refresh the dialog's document reference to the currently active document.
-        This allows reusing the same dialog on different images.
-        """
-        try:
-            main = self.parent()
-            if main and hasattr(main, "_active_doc"):
-                new_doc = main._active_doc()
-                if new_doc is not None and new_doc is not self._doc:
-                    self._doc = new_doc
-                    # Reset L channel and refresh preview for new document
-                    self._L_original = None
-                    self._last_preview = None
-        except Exception:
-            pass
+        # Applied: the tool's job is done, so it closes (headless too: its
+        # runner is blocked in exec() and nothing else would end it).
+        self.accept()
 
 
     def _schedule_mask_refresh(self, _value):
@@ -1055,6 +1312,7 @@ class WaveScaleHDRDialogPro(QDialog):
 
         self.original_rgb = None
         self.preview_rgb = None
+        self._full_rgb = None
         self._lab_original = None
         self._L_original = None
         self._mask_cache = {}

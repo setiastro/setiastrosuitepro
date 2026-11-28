@@ -6036,7 +6036,6 @@ class PlateSolverDialog(QDialog):
         )
         btn_row.addWidget(self.btn_apply_vbundle)
         btn_row.addStretch(1)
-        btn_row.addWidget(make_help_button("plate_solver", self))
         self.btn_go = QPushButton(self.tr("Start"), self)
         from setiastro.saspro.widgets.factory_reset import make_reset_button
         self.btn_reset = make_reset_button(self)
@@ -6065,6 +6064,7 @@ class PlateSolverDialog(QDialog):
         )
         drag_row.addWidget(self.preset_drag_handle)
         drag_row.addStretch(1)
+        drag_row.addWidget(make_help_button("plate_solver", self))
         main.addLayout(drag_row)
 
         # ---------------- Connections ----------------

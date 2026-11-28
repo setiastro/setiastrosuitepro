@@ -224,12 +224,14 @@ from setiastro.saspro.runtime_torch import add_runtime_to_sys_path
 from setiastro.saspro.free_torch_memory import _free_torch_memory
 from setiastro.saspro.stacking_gpu_pipeline import TileSession
 from setiastro.saspro.stacking_gpu_mem import (
+    days_beyond_gap,
     gpu_flat_cache_key,
     is_cuda_oom,
     is_master_flat_key,
     reap_completed,
     session_from_manual_keyword,
     set_name_from_filename_keyword,
+    split_by_night_gap,
     submit_bounded,
 )
 from setiastro.saspro.torch_rejection import (
@@ -338,12 +340,23 @@ def _rejection_gpu_ok(status_cb=None) -> bool:
     return ok
 # --------------------------------------------------------------------------
 
-# Darks are session/date-agnostic. Master darks bucket only by exposure,
-# image size, temperature, gain and offset — never by capture date/session.
-# We stamp every master dark with this single constant session token so that
-# (a) darks from all nights combine, and (b) the existing MasterDark filename
-# parser (which expects a session field) keeps working.
+# Darks don't use sessions. Master darks bucket by exposure, image size,
+# temperature, gain and offset, and across nights until a gap in their
+# capture dates: darks shot more than "stacking/dark_split_days" apart make
+# separate masters (split_by_night_gap), so a library shot over a few nights
+# stays one master while darks from other months or years don't mix. A dated
+# master's session field is its first night; this token is the ingest key's
+# constant session and the session of darks with no capture date.
 _DARK_SESSION = "All"
+_DARK_SPLIT_DAYS_DEFAULT = 30
+
+# Darks tab temperature rows group by bucket ("stacking/temp_group_step", 15 °C
+# on a fresh install), but show the real temperatures of their darks: a bucket
+# centre such as -15 is no dark's temperature. The bucket label stays on the
+# row as its cache key; each dark row carries its own temperature.
+_ROLE_DARK_TEMP_KEY = int(Qt.ItemDataRole.UserRole) + 50      # bucket label (cache key)
+_ROLE_DARK_TEMP_RANGE = int(Qt.ItemDataRole.UserRole) + 51    # [lo, hi] of its darks
+_ROLE_DARK_TEMP = int(Qt.ItemDataRole.UserRole) + 52          # a dark row's own temperature
 
 
 def _safe_torch_inference_ctx():
@@ -8984,11 +8997,15 @@ class StackingSuiteDialog(QDialog):
         self.monitor_btn.clicked.connect(self._show_exec_monitor)
         header_row.addWidget(self.monitor_btn)
 
-        # In-tool documentation button, flush right of Open Log
-        self.btn_help = make_help_button("stacking_suite", self)
+        # Grip + help: their own row under the stacking-folder bar
         from setiastro.saspro.shortcuts import ShortcutGrip
-        header_row.addWidget(ShortcutGrip("stacking_suite", self))
-        header_row.addWidget(self.btn_help)
+        self.btn_help = make_help_button("stacking_suite", self)
+        grip_row = QHBoxLayout()
+        grip_row.setContentsMargins(0, 0, 0, 0)
+        grip_row.addWidget(ShortcutGrip("stacking_suite", self))
+        grip_row.addStretch(1)
+        grip_row.addWidget(self.btn_help)
+        layout.addLayout(grip_row)
 
         self.tabs.currentChanged.connect(self.on_tab_changed)
         self.tabs.currentChanged.connect(lambda *_: self._refresh_quick_stack_summary_later())
@@ -10948,6 +10965,7 @@ class StackingSuiteDialog(QDialog):
         ("reject_interactive_cb", "stacking/reject_outliers_interactive", False),
     )
     _FACTORY_TAB_VALUES = (
+        ("dark_split_days_spin", "stacking/dark_split_days", _DARK_SPLIT_DAYS_DEFAULT),
         ("pedestal_spinbox", "stacking/pedestal_value", 50),
         ("cal_satellite_workers_spin", "stacking/calibration_satellite_workers", 2),
         ("autocrop_pct", "stacking/autocrop_pct", 95.0),
@@ -13625,9 +13643,9 @@ class StackingSuiteDialog(QDialog):
         self._bind_shared_setting_checkbox("stacking/auto_session", self.dark_auto_session_cb, default=True)
         self.dark_auto_session_cb.setToolTip(self.tr(
             "Shared session-detection toggle (also affects Lights and Flats).\n"
-            "Darks themselves are session/date-agnostic: master darks always group\n"
-            "only by exposure, image size, temperature, gain and offset — never by\n"
-            "capture date — so this setting does not change how darks are combined."
+            "Darks don't use sessions: they combine by exposure, image size,\n"
+            "temperature, gain and offset, and split only by 'New master after\n"
+            "a gap of', so this setting does not change how darks are combined."
         ))
         dark_opts_row.addWidget(self.dark_recurse_cb)
         dark_opts_row.addWidget(self.dark_auto_session_cb)
@@ -13662,6 +13680,28 @@ class StackingSuiteDialog(QDialog):
         exposure_tolerance_layout.addWidget(exposure_tolerance_label)
         exposure_tolerance_layout.addWidget(self.exposure_tolerance_spinbox)
         right_controls_layout.addLayout(exposure_tolerance_layout)
+
+        # Darks combine across nights until a gap in their dates (_DARK_SESSION).
+        dark_gap_layout = QHBoxLayout()
+        dark_gap_label = QLabel(self.tr("New master after a gap of:"))
+        self.dark_split_days_spin = QSpinBox()
+        self.dark_split_days_spin.setRange(0, 3650)
+        self.dark_split_days_spin.setSuffix(self.tr(" days"))
+        self.dark_split_days_spin.setSpecialValueText(self.tr("every night"))
+        self.dark_split_days_spin.setValue(self._dark_split_days())
+        self.dark_split_days_spin.valueChanged.connect(self._on_dark_split_days_changed)
+        _gap_tip = self.tr(
+            "Darks with the same exposure, temperature, gain and offset make one master\n"
+            "until there is a gap of more than this many days between the nights they\n"
+            "were shot. A dark library shot over a few nights stays one master; darks\n"
+            "from other months or years become separate masters, and each light uses\n"
+            "the master nearest its own date.\n"
+            "Every night: one master per night. Darks with no date combine as before.")
+        dark_gap_label.setToolTip(_gap_tip)
+        self.dark_split_days_spin.setToolTip(_gap_tip)
+        dark_gap_layout.addWidget(dark_gap_label)
+        dark_gap_layout.addWidget(self.dark_split_days_spin)
+        right_controls_layout.addLayout(dark_gap_layout)
 
         # --- "Turn Those Darks Into Master Darks" Button ---
         self.create_master_dark_btn = QPushButton(self.tr("Turn Those Darks Into Master Darks"))
@@ -13732,6 +13772,38 @@ class StackingSuiteDialog(QDialog):
             return "Temp: Unknown"
         # show fewer decimals if step is 1.0
         return f"Temp: {t:+.0f}C" if step >= 1.0 else f"Temp: {t:+.1f}C"
+
+    @staticmethod
+    def _dark_temp_text(lo, hi) -> str:
+        """Real temperatures of darks: one value when they are within 1 °C
+        of each other ("Temp: -10C"), else their range."""
+        if lo is None or hi is None:
+            return "Temp: Unknown"
+
+        def _f(t):
+            return f"{float(t):+.1f}".rstrip("0").rstrip(".")
+        lo, hi = float(lo), float(hi)
+        if hi - lo <= 1.0:
+            return f"Temp: {_f(round((lo + hi) / 2.0, 1))}C"
+        return f"Temp: {_f(lo)} to {_f(hi)}C"
+
+    def _refresh_dark_temp_row(self, item):
+        """Re-show a Darks tab temperature row from the darks still under it
+        (after some were removed). `item` is that row or anything below it."""
+        while item is not None and item.data(0, _ROLE_DARK_TEMP_KEY) is None:
+            item = item.parent()
+        if item is None:
+            return
+        temps, stack = [], [item]
+        while stack:
+            cur = stack.pop()
+            t = cur.data(0, _ROLE_DARK_TEMP)
+            if t is not None:
+                temps.append(float(t))
+            stack += [cur.child(j) for j in range(cur.childCount())]
+        if temps:
+            item.setData(0, _ROLE_DARK_TEMP_RANGE, [min(temps), max(temps)])
+            item.setText(0, self._dark_temp_text(min(temps), max(temps)))
 
     def _prompt_missing_filter(self, path):
         """
@@ -14037,7 +14109,7 @@ class StackingSuiteDialog(QDialog):
         right_controls_layout.addWidget(self.auto_select_dark_checkbox)
 
         dark_info = QLabel(self.tr(
-            "Auto picks by size, then gain, exposure and temperature. "
+            "Auto picks by size, then gain, exposure, date and temperature. "
             "Each flat group's Dark row shows its pick: choose another master, or None, there."
         ))
         dark_info.setWordWrap(True)
@@ -14184,7 +14256,8 @@ class StackingSuiteDialog(QDialog):
         """Size, exposure, gain, offset and temperature (darks) or filter and
         session (flats) of one master."""
         info = {"path": path, "key": key, "kind": kind, "exposure": None, "size": None,
-                "gain": None, "offset": None, "temp": None, "filter": None, "session": None}
+                "gain": None, "offset": None, "temp": None, "filter": None, "session": None,
+                "night_lo": None, "night_hi": None}
         try:
             hdr, _ = get_valid_header(path)
         except Exception:
@@ -14228,6 +14301,7 @@ class StackingSuiteDialog(QDialog):
                 info["temp"] = self._get_master_dark_meta(path).get("temp")
             except Exception:
                 pass
+            info["night_lo"], info["night_hi"] = self._master_dark_nights(hdr)
         else:
             m = re.match(r"^(.*?) \((?:\d+x\d+|Unknown)\)", key)
             if m:
@@ -14248,7 +14322,7 @@ class StackingSuiteDialog(QDialog):
         meta = cache.get(n)
         if meta is not None:
             return meta
-        meta = {"size": "Unknown", "gain": None, "offset": None, "temp": None}
+        meta = {"size": "Unknown", "gain": None, "offset": None, "temp": None, "night": None}
         try:
             hdr, _ = get_valid_header(path)
         except Exception:
@@ -14263,6 +14337,7 @@ class StackingSuiteDialog(QDialog):
             meta["gain"] = _get_key_float(hdr, "GAIN")
             off = _get_key_float(hdr, "OFFSET")
             meta["offset"] = off if off is not None else _get_key_float(hdr, "BLKLEVEL")
+            meta["night"] = self._file_local_night_date(path, hdr)
         try:
             meta["temp"] = self._get_light_temp(path)[2]
         except Exception:
@@ -14279,21 +14354,82 @@ class StackingSuiteDialog(QDialog):
             return True
         return False
 
-    def _auto_pick_dark(self, snap, image_size, exposure, gain=None, offset=None, temp=None):
+    def _dark_split_days(self) -> int:
+        """Darks more than this many days apart make separate masters, and a
+        master that far from a frame's night loses to a nearer one."""
+        try:
+            return max(0, int(self.settings.value("stacking/dark_split_days",
+                                                  _DARK_SPLIT_DAYS_DEFAULT, type=int)))
+        except Exception:
+            return _DARK_SPLIT_DAYS_DEFAULT
+
+    def _on_dark_split_days_changed(self, value: int):
+        self.settings.setValue("stacking/dark_split_days", int(value))
+        try:
+            self._refresh_master_picks()      # Auto's dark choice depends on it
+        except Exception:
+            pass
+
+    def _master_dark_nights(self, hdr) -> tuple:
+        """(first, last) capture night of a master dark's raw darks, from the
+        DATE-OBS / DATE-END window masters carry; (None, None) if undated."""
+        if hdr is None:
+            return None, None
+        try:
+            first = self._session_token_to_date(self._session_from_dateobs_local_night(hdr))
+        except Exception:
+            first = None
+        last = None
+        try:
+            end = hdr.get("DATE-END")
+            if end not in (None, ""):
+                last = self._session_token_to_date(
+                    self._session_from_dateobs_local_night({"DATE-OBS": str(end)}))
+        except Exception:
+            last = None
+        if first is None:
+            return last, last
+        return first, (last or first)
+
+    def _unique_master_dark_key(self, base_key: str, file_path: str, night=None) -> str:
+        """A master_files key of its own for this master dark. Masters from
+        different dates share exposure, temperature and gain, and one key
+        for both silently dropped one of them."""
+        def _free(k):
+            cur = self.master_files.get(k)
+            return cur is None or _norm_path_key(cur) == _norm_path_key(file_path)
+        if _free(base_key):
+            return base_key
+        if night:
+            cand = f"{base_key} [{night}]"
+            if _free(cand):
+                return cand
+        for n in range(2, 1000):
+            cand = f"{base_key} [#{n}]"
+            if _free(cand):
+                return cand
+        return base_key
+
+    def _auto_pick_dark(self, snap, image_size, exposure, gain=None, offset=None, temp=None,
+                        night=None):
         """The master dark Auto gives frames of this size, exposure, gain /
-        offset and temperature: same size, then matching gain and offset, then
-        nearest exposure, then nearest temperature. None if none is this size."""
+        offset, temperature and capture night: same size, then matching gain
+        and offset, then nearest exposure, then nearest date, then nearest
+        temperature. Dates count only beyond the dark gap setting: darks
+        within it are one set. None if none is this size."""
         best, best_score = None, None
+        gap = self._dark_split_days()
         for m in snap["dark"]:
             if (m["size"] or "Unknown") != image_size or m["exposure"] is None:
                 continue
             go = self._go_mismatch(gain, offset, m["gain"], m["offset"])
             exp_diff = abs(float(m["exposure"]) - float(exposure or 0.0))
+            far = days_beyond_gap(night, m.get("night_lo"), m.get("night_hi"), gap)
             if temp is not None and m["temp"] is not None:
                 t_unknown, t_diff = 0, abs(float(m["temp"]) - float(temp))
             else:
                 t_unknown, t_diff = 1, 9999.0
-            score = (1 if go else 0, exp_diff, t_unknown, t_diff)
+            score = (1 if go else 0, exp_diff, far, t_unknown, t_diff)
             if best_score is None or score < best_score:
                 best, best_score = m["path"], score
         return best
@@ -14320,6 +14456,11 @@ class StackingSuiteDialog(QDialog):
         t = meta.get("temp")
         if t is not None and m["temp"] is not None and abs(t - m["temp"]) > 2.0:
             out.append(("warn", self.tr("⚠ dark {0:+.0f} °C, frames {1:+.0f} °C").format(m["temp"], t)))
+        far = days_beyond_gap(meta.get("night"), m.get("night_lo"), m.get("night_hi"),
+                              self._dark_split_days())
+        if far:
+            out.append(("warn", self.tr("⚠ darks from {0}, {1} days from these frames").format(
+                m["night_lo"].isoformat(), far)))
         return out
 
     def _filters_match(self, a, b) -> bool:
@@ -14544,7 +14685,7 @@ class StackingSuiteDialog(QDialog):
             return None
         meta = self._light_frame_meta(g["rep"]) if g.get("rep") else {}
         return self._auto_pick_dark(snap, g["size"], g["e_min"], meta.get("gain"),
-                                    meta.get("offset"), meta.get("temp"))
+                                    meta.get("offset"), meta.get("temp"), meta.get("night"))
 
     def _flat_group_dark_pick(self, group_key: str, snap) -> tuple:
         """(path or None, state) of the master dark a Flats tab group uses.
@@ -14617,7 +14758,7 @@ class StackingSuiteDialog(QDialog):
         if kind == "dark":
             exposure = self._exposure_from_label(exposure_text) or 0.0
             return self._auto_pick_dark(snap, meta["size"], exposure, meta["gain"], meta["offset"],
-                                        meta["temp"])
+                                        meta["temp"], meta.get("night"))
         if not snap["flat"]:
             return None
         return self._auto_pick_master_flat(filter_name, meta["size"], session or "Default",
@@ -14677,7 +14818,7 @@ class StackingSuiteDialog(QDialog):
             tag_w = max(fm.horizontalAdvance(t) for t in list(tags.values()) + [every]) + 8
         lw = self._pick_label_width()
         dark_tip = self.tr(
-            "Auto picks by size, then gain, exposure and temperature. Pick another master, or None, "
+            "Auto picks by size, then gain, exposure, date and temperature. Pick another master, or None, "
             "for this group only. Right-click frames to give them their own.")
         flat_tip = self.tr(
             "Auto picks by filter and size, then the flat from the same night (else the nearest night) "
@@ -17621,8 +17762,9 @@ class StackingSuiteDialog(QDialog):
                         for j in range(cur.childCount()):
                             stack.append(cur.child(j))
 
-                # purge matching caches
-                item_text = item.text(0)
+                # purge matching caches (a temp row shows real temperatures;
+                # its cache key is the bucket label it stores)
+                item_text = item.data(0, _ROLE_DARK_TEMP_KEY) or item.text(0)
                 if hasattr(self, "_dark_temp_item"):
                     for k in [k for k in list(self._dark_temp_item.keys()) if k[1] == item_text]:
                         self._dark_temp_item.pop(k, None)
@@ -17662,6 +17804,7 @@ class StackingSuiteDialog(QDialog):
                     del file_dict[k]
 
             parent.removeChild(item)
+            self._refresh_dark_temp_row(parent)
 
         self._purge_removed_paths(removed_paths)
         self._normalize_sessioned_files_map(file_dict)
@@ -17957,7 +18100,7 @@ class StackingSuiteDialog(QDialog):
         # dark create_master_flat will use), an "N frames" row, its frames.
         lw = self._pick_label_width()
         dark_tip = self.tr(
-            "Auto picks by size, then gain, exposure and temperature. Pick another master, or None, "
+            "Auto picks by size, then gain, exposure, date and temperature. Pick another master, or None, "
             "for this group only.")
         for g in groups:
             filter_name, image_size, session = g["filter"], g["size"], g["session"]
@@ -20121,7 +20264,10 @@ class StackingSuiteDialog(QDialog):
                     btn_cancel   = msg.addButton(self.tr("Skip file"), QMessageBox.ButtonRole.RejectRole)
 
                     from PyQt6.QtWidgets import QCheckBox
-                    apply_all_cb = QCheckBox(self.tr("Apply this choice to all remaining mismatches of this kind"))
+                    # Parented to the box: PyQt's setCheckBox doesn't take ownership, so a
+                    # parentless checkbox is freed on return while the box (a child of
+                    # self) still points at it, and the next style change crashes.
+                    apply_all_cb = QCheckBox(self.tr("Apply this choice to all remaining mismatches of this kind"), msg)
                     msg.setCheckBox(apply_all_cb)
 
                     msg.exec()
@@ -20241,13 +20387,20 @@ class StackingSuiteDialog(QDialog):
                     tree.addTopLevelItem(exposure_item)
                     self._dark_group_item[base_key] = exposure_item
 
-                # second-level: temp group
+                # second-level: temp group. Keyed by bucket, shown as the real
+                # temperatures of its darks (see _ROLE_DARK_TEMP_KEY).
                 temp_key = (base_key, temp_label)
                 temp_item = self._dark_temp_item.get(temp_key)
                 if temp_item is None:
                     temp_item = QTreeWidgetItem([temp_label, ""])
+                    temp_item.setData(0, _ROLE_DARK_TEMP_KEY, temp_label)
                     exposure_item.addChild(temp_item)
                     self._dark_temp_item[temp_key] = temp_item
+                if chosen_t is not None:
+                    rng = temp_item.data(0, _ROLE_DARK_TEMP_RANGE) or [chosen_t, chosen_t]
+                    lo, hi = min(float(rng[0]), chosen_t), max(float(rng[1]), chosen_t)
+                    temp_item.setData(0, _ROLE_DARK_TEMP_RANGE, [lo, hi])
+                    temp_item.setText(0, self._dark_temp_text(lo, hi))
 
                 # third-level: gain/offset group
                 go_key = (base_key, temp_label, go_label)
@@ -20257,20 +20410,24 @@ class StackingSuiteDialog(QDialog):
                     temp_item.addChild(go_item)
                     self._dark_go_item[go_key] = go_item
 
-                # Darks are session/date-agnostic: key ONLY by exposure/size,
-                # temperature, gain and offset. Using a constant session bucket
-                # keeps darks from all nights in the same group so they combine.
+                # Darks don't use sessions: key ONLY by exposure/size,
+                # temperature, gain and offset (constant session bucket).
+                # create_master_dark splits a group by date gaps, from the
+                # capture night cached here (see _DARK_SESSION).
                 composite_key = (base_key, _DARK_SESSION, temp_bucket, gain_val, offset_val)
                 self.dark_files.setdefault(composite_key, []).append(path)
 
-                # Note: no "Session:" shown for darks — sessions don't apply to them.
+                # No "Session:" for darks; the capture night shows instead.
+                night = self._file_local_night_date(path, header)
                 meta_text_dark = (
-                    f"Size: {image_size} | {temp_label} | {go_label}"
+                    f"Size: {image_size} | {self._dark_temp_text(chosen_t, chosen_t)} | {go_label}"
+                    + (f" | {night.isoformat()}" if night else "")
                 )
                 leaf = QTreeWidgetItem([os.path.basename(path), meta_text_dark])
                 leaf.setData(0, Qt.ItemDataRole.UserRole, path)
                 leaf.setData(0, Qt.ItemDataRole.UserRole + 1, _DARK_SESSION)
                 leaf.setData(0, Qt.ItemDataRole.UserRole + 2, temp_bucket)
+                leaf.setData(0, _ROLE_DARK_TEMP, chosen_t)
                 leaf.setData(0, Qt.ItemDataRole.UserRole + 3, gain_val)
                 leaf.setData(0, Qt.ItemDataRole.UserRole + 4, offset_val)
                 go_item.addChild(leaf)
@@ -20355,6 +20512,7 @@ class StackingSuiteDialog(QDialog):
                         "gain": _get_key_float(header, "GAIN"),
                         "offset": l_off if l_off is not None else _get_key_float(header, "BLKLEVEL"),
                         "temp": l_temp,
+                        "night": self._file_local_night_date(path, header),
                     }
                 except Exception:
                     pass
@@ -20419,7 +20577,13 @@ class StackingSuiteDialog(QDialog):
                     gain_val = _get_key_float(header, "GAIN")
                     temp_suffix = f" [{sensor_temp:+.1f}C]" if sensor_temp is not None else ""
                     gain_suffix = f" [G{int(round(gain_val))}]" if gain_val is not None else ""
-                    key = f"{exposure_text} ({image_size}){temp_suffix}{gain_suffix}"
+                    # A key of its own: two masters with the same exposure,
+                    # temp and gain (shot years apart, say) used to overwrite
+                    # each other here, so the first was never matched again.
+                    _night = self._master_dark_nights(header)[0]
+                    key = self._unique_master_dark_key(
+                        f"{exposure_text} ({image_size}){temp_suffix}{gain_suffix}",
+                        file_path, _night.isoformat() if _night else None)
                     self.master_files[key] = file_path
                     self.master_sizes[file_path] = image_size
                     self._note_master_kind(file_path, "dark")
@@ -20550,11 +20714,11 @@ class StackingSuiteDialog(QDialog):
                 offset = _get_key_float(hdr, "BLKLEVEL")
             return gain, offset
 
-        # Darks are session/date-agnostic: they bucket ONLY by exposure, image
-        # size, temperature, gain and offset. We deliberately ignore whatever
-        # session tag (e.g. a capture date) is stored on the key so darks from
-        # any/all nights combine into a single master per (exp, size, temp, gain,
-        # offset). See _DARK_SESSION.
+        # Darks don't use sessions: they bucket by exposure, image size,
+        # temperature, gain and offset, ignoring any session tag on the key.
+        # Each bucket is then split where the darks' capture dates leave a gap
+        # (below), so darks from other months or years don't mix. See
+        # _DARK_SESSION.
         for key, file_list in (self.dark_files or {}).items():
             if isinstance(key, tuple) and len(key) >= 2:
                 exposure_key = str(key[0])
@@ -20614,6 +20778,24 @@ class StackingSuiteDialog(QDialog):
                     dark_files_by_group[matched_group] = []
 
                 dark_files_by_group[matched_group].extend(paths_in_bucket)
+
+        # Split each group where its capture nights leave a gap of more than
+        # "New master after a gap of" days. The session slot carries the set's
+        # first night (or _DARK_SESSION when undated) into the master's name,
+        # SESSION card and tree label.
+        split_days = self._dark_split_days()
+        dated_groups: dict = {}
+        for (exp_t, size_t, _sess, tb, gn, of), paths in dark_files_by_group.items():
+            nights = {p: self._file_local_night_date(p) for p in paths}
+            parts = split_by_night_gap(nights, split_days, undated_label=_DARK_SESSION)
+            if len(parts) > 1:
+                self.update_status(
+                    f"🗓️ {exp_t:g}s ({size_t}) darks split by date "
+                    f"(gap > {split_days} d): "
+                    + ", ".join(f"{lbl} ({len(pp)})" for lbl, pp in parts))
+            for lbl, pp in parts:
+                dated_groups[(exp_t, size_t, lbl, tb, gn, of)] = pp
+        dark_files_by_group = dated_groups
 
         master_dir = os.path.join(self.stacking_directory, "Master_Calibration_Files")
         os.makedirs(master_dir, exist_ok=True)
@@ -20942,14 +21124,17 @@ class StackingSuiteDialog(QDialog):
                 # -------------------------------------------------------------
                 # Build output filename (include session + exposure + size + temp bucket tag)
                 # -------------------------------------------------------------
+                # The darks' real median temperature, not the grouping bucket:
+                # with the 15 °C step a fresh install uses, -10 °C darks sit in
+                # the -15 bucket and were named "m15p0C".
                 temp_tag = ""
                 try:
-                    if temp_bucket is not None:
-                        temp_tag = "_" + _temp_to_stem_tag(float(temp_bucket))
-                    elif temp_info.get("ccd_med") is not None:
+                    if temp_info.get("ccd_med") is not None:
                         temp_tag = "_" + _temp_to_stem_tag(float(temp_info["ccd_med"]))
                     elif temp_info.get("set_med") is not None:
                         temp_tag = "_" + _temp_to_stem_tag(float(temp_info["set_med"]), prefix="set")
+                    elif temp_bucket is not None:
+                        temp_tag = "_" + _temp_to_stem_tag(float(temp_bucket))
                 except Exception:
                     temp_tag = ""
 
@@ -20979,7 +21164,7 @@ class StackingSuiteDialog(QDialog):
                 if _dark_roworder:
                     master_header["ROWORDER"] = _dark_roworder
                 master_header["EXPTIME"]  = (float(exposure_time), "Exposure time (s)")
-                master_header["SESSION"]  = (str(session), "Session-agnostic dark (applies to all)")
+                master_header["SESSION"]  = (str(session), "First night of these darks (All = undated)")
                 master_header["NCOMBINE"] = (int(N), "Number of darks combined")
                 master_header["NSTACK"]   = (int(N), "Alias of NCOMBINE (SetiAstro)")
                 # Acquisition window of the raw darks. Darks are matched on
@@ -21023,8 +21208,8 @@ class StackingSuiteDialog(QDialog):
                 if channels == 3:
                     master_header["NAXIS3"] = 3
 
-                # Tree label includes temp for visibility
-                # Darks are session-agnostic — no session bracket in the label.
+                # Tree label includes temp for visibility, and the first night
+                # when the darks are dated (masters split by date gaps).
                 tree_label = f"{exposure_time:g}s ({image_size})"
                 if temp_info.get("ccd_med") is not None:
                     tree_label += f" [CCD {float(temp_info['ccd_med']):+.1f}C]"
@@ -21032,6 +21217,8 @@ class StackingSuiteDialog(QDialog):
                     tree_label += f" [SET {float(temp_info['set_med']):+.1f}C]"
                 elif temp_bucket is not None:
                     tree_label += f" [TEMP {float(temp_bucket):+.1f}C]"
+                if session != _DARK_SESSION:
+                    tree_label += f" [{session}]"
 
                 def _on_saved(_path=master_dark_path, _label=tree_label):
                     self.add_master_dark_to_tree(_label, _path)
@@ -21139,6 +21326,7 @@ class StackingSuiteDialog(QDialog):
             self.master_sizes = {}
 
         # Build gain-aware key to match what add_master_files writes
+        night = None
         try:
             hdr = fits.getheader(master_dark_path, memmap=True)
             gain_val = _get_key_float(hdr, "GAIN")
@@ -21151,12 +21339,15 @@ class StackingSuiteDialog(QDialog):
                 full_key = f"{m.group(1)}{temp_suffix}{gain_suffix}"
             else:
                 full_key = f"{exposure_key}{temp_suffix}{gain_suffix}"
+            night = self._master_dark_nights(hdr)[0]
         except Exception:
             full_key = exposure_key
 
-        # Only store if this exact key isn't already present (add_master_files may have written it)
-        if full_key not in self.master_files:
-            self.master_files[full_key] = master_dark_path
+        # Its own key: masters split by date share exposure, temp and gain, and
+        # "only if this key is free" dropped every one after the first.
+        full_key = self._unique_master_dark_key(full_key, master_dark_path,
+                                                night.isoformat() if night else None)
+        self.master_files[full_key] = master_dark_path
         self.master_sizes[master_dark_path] = size
         self._note_master_kind(master_dark_path, "dark")
 
@@ -21276,7 +21467,8 @@ class StackingSuiteDialog(QDialog):
                 return None
             meta = self._light_frame_meta(file_list[0])
             return self._auto_pick_dark(flat_master_snap, image_size, max(0.0, exp_here),
-                                        meta["gain"], meta["offset"], meta["temp"])
+                                        meta["gain"], meta["offset"], meta["temp"],
+                                        meta.get("night"))
 
         def _load_dark_normalized(path):
             """Load a dark FITS/XISF, flip ROWORDER if needed, normalise layout to

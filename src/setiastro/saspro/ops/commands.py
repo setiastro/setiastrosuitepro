@@ -1467,10 +1467,17 @@ register(CommandSpec(
             min=0.10, max=10.00,
             desc="Gamma shaping for the luminance protection mask."
         ),
+        PresetSpec(
+            key="amount",
+            type="float",
+            default=1.0,
+            min=0.0, max=1.0,
+            desc="Blend of the result with the original: 1 = full effect, 0 = unchanged."
+        ),
     ],
     examples=[
         "ctx.run_command('wavescale_hdr', {'n_scales': 5, 'compression_factor': 1.5, 'mask_gamma': 5.0})",
-        "ctx.run_command('wavescale_hdr', {'n_scales': 4, 'compression_factor': 2.2})",
+        "ctx.run_command('wavescale_hdr', {'n_scales': 4, 'compression_factor': 2.2, 'amount': 0.6})",
     ],
     supports_mono=True,
     supports_rgb=True,
@@ -1518,9 +1525,16 @@ register(CommandSpec(
             min=1, max=10,
             desc="Extra enhancement passes."
         ),
+        PresetSpec(
+            key="amount",
+            type="float",
+            default=1.0,
+            min=0.0, max=1.0,
+            desc="Blend of the result with the original: 1 = full effect, 0 = unchanged."
+        ),
     ],
     examples=[
-        "ctx.run_command('wavescale_dark_enhance', {'n_scales': 6, 'boost_factor': 5.0})",
+        "ctx.run_command('wavescale_dark_enhance', {'n_scales': 6, 'boost_factor': 5.0, 'amount': 0.7})",
         "ctx.run_command('wavescale_dark_enhance', {'n_scales': 7, 'boost_factor': 6.5, 'mask_gamma': 1.3, 'iterations': 3})",
     ],
     supports_mono=True,

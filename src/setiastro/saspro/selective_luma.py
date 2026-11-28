@@ -486,6 +486,7 @@ class SelectiveLuminanceCorrection(QDialog):
         # ── Must be set BEFORE _build_ui() because _build_ui ends with
         #    _update_preview_pixmap(), which reads _zoom, _panning, etc. ──
         self._zoom              = 1.0
+        self._fit_mode          = True      # the preview opens fitted and follows the window
         self._panning           = False
         self._pan_start_pos_vp  = None
         self._pan_start_scroll  = (0, 0)
@@ -528,7 +529,8 @@ class SelectiveLuminanceCorrection(QDialog):
         # LEFT PANE
         # ------------------------------------------------------------------
         left_widget = QWidget()
-        left_widget.setMinimumWidth(360)
+        left_widget.setMinimumWidth(360)        # raised to the controls' width by _fit_left_pane
+        self._left_widget = left_widget
         left_widget.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
         self.splitter.addWidget(left_widget)
 
@@ -542,13 +544,14 @@ class SelectiveLuminanceCorrection(QDialog):
         except Exception:
             disp = "Image"
         self.lbl_target = QLabel(self.tr("Target View:  <b>{0}</b>").format(disp))
+        # a long view name never widens the control column
+        self.lbl_target.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         left_outer.addWidget(self.lbl_target)
 
-        # Small preview toggle
+        # Small preview toggle (placed with the preview's view toggles)
         self.cb_small_preview = QCheckBox(self.tr("Small-sized Preview (fast)"))
         self.cb_small_preview.setChecked(True)
         self.cb_small_preview.toggled.connect(self._recompute_mask_and_preview)
-        left_outer.addWidget(self.cb_small_preview)
 
         # ---------- scrollable controls container ----------
         controls_container = QWidget()
@@ -556,25 +559,37 @@ class SelectiveLuminanceCorrection(QDialog):
         left.setContentsMargins(0, 0, 0, 0)
         left.setSpacing(8)
 
-        # ===== MASK group =====
-        gb_mask = QGroupBox(self.tr("Luminance Mask"))
-        gl = QGridLayout(gb_mask)
-        gl.setContentsMargins(8, 8, 8, 8)
-        gl.setHorizontalSpacing(10)
-        gl.setVerticalSpacing(8)
+        def _hline():
+            ln = QFrame()
+            ln.setFrameShape(QFrame.Shape.HLine)
+            ln.setFrameShadow(QFrame.Shadow.Plain)
+            ln.setStyleSheet("color: palette(mid);")   # a quiet divider in any theme
+            return ln
 
-        # Row 0: Preset
-        gl.addWidget(QLabel(self.tr("Preset:")), 0, 0)
+        # ===== MASK group, top to bottom: preset, the band beside the wheel,
+        # how the mask is shaped, how soft it is, or an imported mask.
+        gb_mask = QGroupBox(self.tr("Luminance Mask"))
+        gm = QVBoxLayout(gb_mask)
+        gm.setContentsMargins(8, 8, 8, 8)
+        gm.setSpacing(8)
+
+        # Preset
+        row_preset = QHBoxLayout()
+        row_preset.addWidget(QLabel(self.tr("Preset:")))
         self.dd_preset = QComboBox()
         self.dd_preset.addItems(["Custom"] + list(_LUM_PRESETS.keys()))
         self.dd_preset.currentTextChanged.connect(self._on_preset_change)
-        gl.addWidget(self.dd_preset, 0, 1, 1, 4)
+        row_preset.addWidget(self.dd_preset, 1)
+        gm.addLayout(row_preset)
 
-        # Luminance wheel (rows 1–6, cols 0–1)
+        # Luminance wheel beside the band
+        gband = QGridLayout()
+        gband.setHorizontalSpacing(8)
+        gband.setVerticalSpacing(6)
         self.lum_wheel = LuminanceWheel(lo=0.0, hi=0.35)
         self.lum_wheel.setMinimumSize(130, 130)
         self.lum_wheel.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Minimum)
-        gl.addWidget(self.lum_wheel, 1, 0, 6, 2)
+        gband.addWidget(self.lum_wheel, 0, 0, 4, 1, Qt.AlignmentFlag.AlignTop)
 
         # Wheel → sliders/spins
         def _wheel_to_controls(lo: float, hi: float):
@@ -599,7 +614,7 @@ class SelectiveLuminanceCorrection(QDialog):
 
         # Helper: 0-255 integer slider + 0.0-1.0 double spin (linked)
         def _lum_pair(grid, label, row):
-            grid.addWidget(QLabel(label), row, 2)
+            grid.addWidget(QLabel(label), row, 1)
             sld = QSlider(Qt.Orientation.Horizontal)
             sld.setRange(0, 255); sld.setSingleStep(1); sld.setPageStep(10)
             spn = QDoubleSpinBox()
@@ -617,78 +632,90 @@ class SelectiveLuminanceCorrection(QDialog):
 
             sld.valueChanged.connect(_s2d)
             spn.valueChanged.connect(_d2s)
-            grid.addWidget(sld, row, 3, 1, 3)
-            grid.addWidget(spn, row, 6, 1, 1)
+            grid.addWidget(sld, row, 2)
+            grid.addWidget(spn, row, 3)
             return sld, spn
 
-        # Rows 1–2: Lo / Hi
-        self.sl_lo, self.ds_lo = _lum_pair(gl, self.tr("Lum. low (0–255):"),  1)
-        self.sl_hi, self.ds_hi = _lum_pair(gl, self.tr("Lum. high (0–255):"), 2)
+        # Low / High (the box shows the band as 0-1, like the readout)
+        self.sl_lo, self.ds_lo = _lum_pair(gband, self.tr("Low:"),  0)
+        self.sl_hi, self.ds_hi = _lum_pair(gband, self.tr("High:"), 1)
         self.sl_lo.setValue(0);   self.ds_lo.setValue(0.0)
         self.sl_hi.setValue(89);  self.ds_hi.setValue(89/255)
 
-        # Row 3: smoothness + invert
-        gl.addWidget(QLabel(self.tr("Smoothness:")), 3, 2)
+        gband.addWidget(QLabel(self.tr("Smoothness:")), 2, 1)
         self.ds_smooth = QDoubleSpinBox()
         self.ds_smooth.setRange(0.0, 0.5); self.ds_smooth.setSingleStep(0.01)
         self.ds_smooth.setDecimals(3); self.ds_smooth.setValue(0.05)
         self.ds_smooth.valueChanged.connect(self._schedule_mask)
-        gl.addWidget(self.ds_smooth, 3, 3)
+        gband.addWidget(self.ds_smooth, 2, 2, 1, 2, Qt.AlignmentFlag.AlignLeft)
 
         self.cb_invert = QCheckBox(self.tr("Invert range"))
         self.cb_invert.setChecked(False)
         self.cb_invert.toggled.connect(self._schedule_mask)
-        gl.addWidget(self.cb_invert, 3, 4, 1, 3)
+        gband.addWidget(self.cb_invert, 3, 1, 1, 3)
+        gband.setColumnStretch(2, 1)
+        gm.addLayout(gband)
+        gm.addWidget(_hline())
 
-        # Row 4: intensity + blur
-        gl.addWidget(QLabel(self.tr("Intensity:")), 4, 2)
+        # Intensity + edge blur
         self.ds_int = QDoubleSpinBox()
         self.ds_int.setRange(0.0, 2.0); self.ds_int.setSingleStep(0.05)
         self.ds_int.setValue(1.0)
         self.ds_int.valueChanged.connect(self._schedule_adjustments)
-        gl.addWidget(self.ds_int, 4, 3)
 
-        gl.addWidget(QLabel(self.tr("Edge blur (px):")), 4, 4)
         self.sb_blur = QSpinBox()
         self.sb_blur.setRange(0, 150); self.sb_blur.setValue(5)
         self.sb_blur.valueChanged.connect(self._schedule_mask)
-        gl.addWidget(self.sb_blur, 4, 5)
 
-        # Row 5: show mask + use imported
-        self.cb_show_mask = QCheckBox(self.tr("Show mask overlay"))
-        self.cb_show_mask.setChecked(False)
-        self.cb_show_mask.toggled.connect(self._update_preview_pixmap)
-        gl.addWidget(self.cb_show_mask, 5, 2, 1, 2)
+        gs = QGridLayout()
+        gs.setHorizontalSpacing(8)
+        gs.setVerticalSpacing(6)
+        gs.addWidget(QLabel(self.tr("Intensity:")), 0, 0)
+        gs.addWidget(self.ds_int, 0, 1)
+        gs.addWidget(QLabel(self.tr("Edge blur (px):")), 0, 2)
+        gs.addWidget(self.sb_blur, 0, 3)
+        gs.setColumnStretch(1, 1)
+        gs.setColumnStretch(3, 1)
+        gm.addLayout(gs)
 
-        self.cb_use_imported = QCheckBox(self.tr("Use imported mask"))
-        self.cb_use_imported.setChecked(False)
-        self.cb_use_imported.toggled.connect(self._on_use_imported_mask_toggled)
-        gl.addWidget(self.cb_use_imported, 5, 4, 1, 2)
-
-        # Soft (proportional) mask: weight by how close each pixel's luminance is
-        # to the selected range instead of a hard in/out selection -> fewer blobs.
+        # Soft (proportional) mask, on by default: weight by how close each
+        # pixel's luminance is to the selected range instead of a hard in/out
+        # selection -> fewer blobs.
         self.cb_soft_mask = QCheckBox(self.tr("Soft (proportional)"))
-        self.cb_soft_mask.setChecked(False)
+        self.cb_soft_mask.setChecked(True)
         self.cb_soft_mask.setToolTip(self.tr(
             "Weight the mask by how close a pixel's luminance is to the selected "
             "range, with smooth shoulders, instead of a hard in/out selection. "
             "Softens blobby, hard-edged (iso-luminance) corrections."
         ))
         self.cb_soft_mask.toggled.connect(self._schedule_mask)
-        gl.addWidget(self.cb_soft_mask, 5, 6, 1, 2)
+        gm.addWidget(self.cb_soft_mask)
+        gm.addWidget(_hline())
 
-        # Row 6: import mask
+        # Imported mask (picking one turns "Use imported mask" on)
         self.btn_import_mask = QPushButton(self.tr("Pick mask from view…"))
         self.btn_import_mask.clicked.connect(self._import_mask_from_view)
-        gl.addWidget(self.btn_import_mask, 6, 2, 1, 2)
+
+        self.cb_use_imported = QCheckBox(self.tr("Use imported mask"))
+        self.cb_use_imported.setChecked(False)
+        self.cb_use_imported.toggled.connect(self._on_use_imported_mask_toggled)
+
+        row_imp = QHBoxLayout()
+        row_imp.setSpacing(8)
+        row_imp.addWidget(self.btn_import_mask)
+        row_imp.addWidget(self.cb_use_imported)
+        row_imp.addStretch(1)
+        gm.addLayout(row_imp)
 
         self.lbl_imported_mask = QLabel(self.tr("No imported mask"))
-        gl.addWidget(self.lbl_imported_mask, 6, 4, 1, 3)
+        self.lbl_imported_mask.setStyleSheet("color: #888; font-size: 11px;")
+        self.lbl_imported_mask.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        gm.addWidget(self.lbl_imported_mask)
 
-        # column stretch
-        gl.setColumnStretch(0, 0); gl.setColumnStretch(1, 0)
-        for c in (2, 3, 4, 5, 6, 7):
-            gl.setColumnStretch(c, 1)
+        # Overlay toggle (placed with the preview's view toggles)
+        self.cb_show_mask = QCheckBox(self.tr("Show mask overlay"))
+        self.cb_show_mask.setChecked(False)
+        self.cb_show_mask.toggled.connect(self._update_preview_pixmap)
 
         left.addWidget(gb_mask)
 
@@ -722,6 +749,16 @@ class SelectiveLuminanceCorrection(QDialog):
         self.dd_color_mode.currentIndexChanged.connect(self._update_color_mode_enabled)
         gll.addWidget(self.dd_color_mode, 4, 1, 1, 2)
         left.addWidget(gb_lsc)
+
+        # One label column width in the three adjustment groups, so their
+        # sliders start at the same place.
+        _grids = (glc, glr, gll)
+        _lab_w = max(g.itemAtPosition(r, 0).widget().sizeHint().width()
+                     for g in _grids for r in range(g.rowCount())
+                     if g.itemAtPosition(r, 0) is not None and g.itemAtPosition(r, 0).widget() is not None)
+        for g in _grids:
+            g.setColumnMinimumWidth(0, _lab_w)
+            g.setColumnStretch(1, 1)
  
         self.lbl_contrast_warning = QLabel(self.tr(
             "⚠️  Contrast below −0.67: curve is no longer monotonically increasing"
@@ -732,21 +769,24 @@ class SelectiveLuminanceCorrection(QDialog):
         self.lbl_contrast_warning.setWordWrap(True)
         self.lbl_contrast_warning.setVisible(False)
         left.addWidget(self.lbl_contrast_warning)
+        left.addStretch(1)
  
         # wrap in scroll area
         left_scroll = QScrollArea()
         left_scroll.setWidget(controls_container)
-        left_scroll.setWidgetResizable(False)
+        left_scroll.setWidgetResizable(True)
         left_scroll.setFrameShape(QFrame.Shape.NoFrame)
-        left_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        # vertical only: _fit_left_pane keeps the column as wide as its controls
+        left_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._left_scroll = left_scroll
+        self._controls_container = controls_container
         left_scroll.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
         left_outer.addWidget(left_scroll, 1)
 
-        # Live toggle
+        # Live toggle (placed with the preview's view toggles)
         self.cb_live = QCheckBox(self.tr("Preview changed image"))
         self.cb_live.setChecked(True)
         self.cb_live.toggled.connect(self._update_preview_pixmap)
-        left_outer.addWidget(self.cb_live)
 
         # Buttons
         btn_row = QHBoxLayout()
@@ -758,16 +798,31 @@ class SelectiveLuminanceCorrection(QDialog):
         self.btn_push.clicked.connect(self._apply_as_new_doc)
         self.btn_export_mask.clicked.connect(self._export_mask_doc)
         self.btn_reset.clicked.connect(self._reset_controls)
-        for b in (self.btn_apply, self.btn_push, self.btn_export_mask, self.btn_reset):
-            btn_row.addWidget(b)
+        # Reset and Export Mask on the left, the two Applies on the right.
+        # Clear Region Mask sits under the preview, by the region readout.
+        btn_row.addWidget(self.btn_reset)
+        btn_row.addWidget(self.btn_export_mask)
+        btn_row.addStretch(1)
+        btn_row.addWidget(self.btn_push)
+        btn_row.addWidget(self.btn_apply)
 
         self.btn_clear_region = QPushButton(self.tr("✕ Clear Region Mask"))
         self.btn_clear_region.setToolTip(self.tr("Remove the freehand region constraint"))
         self.btn_clear_region.clicked.connect(self._clear_region_mask)
         self.btn_clear_region.setEnabled(False)
-        btn_row.addWidget(self.btn_clear_region)
 
         left_outer.addLayout(btn_row)
+        self._left_buttons = btn_row
+
+        # Grip + help: their own row at the bottom of the left column (above the footer)
+        from setiastro.saspro.shortcuts import ShortcutGrip
+        self.btn_doc_help = make_help_button("selective_luma", self)
+        grip_row = QHBoxLayout()
+        grip_row.setContentsMargins(0, 0, 0, 0)
+        grip_row.addWidget(ShortcutGrip("selective_lum", self))
+        grip_row.addStretch(1)
+        grip_row.addWidget(self.btn_doc_help)
+        left_outer.addLayout(grip_row)
 
         # Footer
         footer_label = QLabel(self.tr("""
@@ -800,11 +855,16 @@ class SelectiveLuminanceCorrection(QDialog):
         for b in (self.btn_zoom_out, self.btn_zoom_in, self.btn_zoom_1, self.btn_fit):
             zoom_row.addWidget(b)
         zoom_row.addStretch(1)
-        self.btn_doc_help = make_help_button("selective_luma", self)
-        from setiastro.saspro.shortcuts import ShortcutGrip
-        zoom_row.addWidget(ShortcutGrip("selective_lum", self))
-        zoom_row.addWidget(self.btn_doc_help)
         right.addLayout(zoom_row)
+
+        # What the preview shows, next to the preview
+        view_row = QHBoxLayout()
+        view_row.setSpacing(16)
+        view_row.addWidget(self.cb_show_mask)
+        view_row.addWidget(self.cb_live)
+        view_row.addWidget(self.cb_small_preview)
+        view_row.addStretch(1)
+        right.addLayout(view_row)
 
         self.lbl_help = QLabel(self.tr(
             "🖱️ <b>Click</b>: show luminance &nbsp;•&nbsp; "
@@ -839,20 +899,24 @@ class SelectiveLuminanceCorrection(QDialog):
         right.addWidget(self.lbl_lum_readout)
         self.lbl_region_readout = QLabel(self.tr("Region mask: none  (Alt+Drag to draw)"))
         self.lbl_region_readout.setStyleSheet("color: #888; font-size: 11px;")
-        right.addWidget(self.lbl_region_readout)
+        region_row = QHBoxLayout()
+        region_row.addWidget(self.lbl_region_readout, 1)
+        region_row.addWidget(self.btn_clear_region)
+        right.addLayout(region_row)
         # Splitter stretch
         self.splitter.setStretchFactor(0, 0)
         self.splitter.setStretchFactor(1, 1)
-        self.splitter.setSizes([420, 900])
+        self.splitter.setSizes([480, 800])
 
         self.setSizeGripEnabled(True)
         try:
             g = QGuiApplication.primaryScreen().availableGeometry()
             max_h = int(g.height() * 0.9)
-            self.resize(1080, min(680, max_h))
+            self.resize(min(1280, int(g.width() * 0.9)), min(780, max_h))
             self.setMaximumHeight(max_h)
         except Exception:
-            self.resize(1080, 680)
+            self.resize(1280, 780)
+        self._fit_left_pane()
 
         # --- wiring ---
         self._update_color_mode_enabled()
@@ -899,6 +963,17 @@ class SelectiveLuminanceCorrection(QDialog):
     # =================================================================
     # Helpers
     # =================================================================
+
+    def _fit_left_pane(self):
+        """The control column is never narrower than its controls, so nothing
+        is clipped or needs sideways scrolling, in any language."""
+        try:
+            sbw = self._left_scroll.verticalScrollBar().sizeHint().width()
+            need = max(self._controls_container.minimumSizeHint().width() + sbw + 6,
+                       self._left_buttons.minimumSize().width())
+            self._left_widget.setMinimumWidth(need)
+        except Exception:
+            pass
 
     def _clear_region_mask(self):
         self._region_mask_full = None
@@ -1143,6 +1218,7 @@ class SelectiveLuminanceCorrection(QDialog):
         vbar.setValue(int(max(0, min(y, vbar.maximum()))))
 
     def _apply_zoom(self, new_zoom, anchor_label_pos=None):
+        self._fit_mode = False          # any zoom but Fit stops following the window
         old_zoom = getattr(self, "_zoom", 1.0)
         new_zoom = max(0.05, min(16.0, float(new_zoom)))
         if abs(new_zoom - old_zoom) < 1e-6: return
@@ -1178,12 +1254,20 @@ class SelectiveLuminanceCorrection(QDialog):
         if w <= 0 or h <= 0: return
         k = min(vp.width() / w, vp.height() / h)
         self._apply_zoom(k)
+        self._fit_mode = True           # keep fitting as the window changes
+        self._fit_shape = (h, w)
 
     # =================================================================
     # Event filter (zoom + pan + luminance pick)
     # =================================================================
     def eventFilter(self, obj, ev):
         from PyQt6.QtCore import QEvent
+
+        # Fit follows the preview's size until the user zooms
+        if obj is self.scroll.viewport() and ev.type() == QEvent.Type.Resize:
+            if getattr(self, "_fit_mode", False):
+                QTimer.singleShot(0, self._fit_to_preview)
+            return False
 
         def _vp_pos(o, e):
             if o is self.scroll.viewport():
@@ -1438,6 +1522,9 @@ class SelectiveLuminanceCorrection(QDialog):
 
         pm = _to_pixmap(show)
         h, w = show.shape[:2]
+        # a new preview size (small preview toggled, image applied) refits
+        if getattr(self, "_fit_mode", False) and getattr(self, "_fit_shape", None) != (h, w):
+            QTimer.singleShot(0, self._fit_to_preview)
         zw = max(1, int(round(w * self._zoom)))
         zh = max(1, int(round(h * self._zoom)))
         pm_scaled = pm.scaled(zw, zh,
@@ -1681,7 +1768,6 @@ class SelectiveLuminanceCorrection(QDialog):
             s.setValue("sellum/small_preview", bool(self.cb_small_preview.isChecked()))
             s.setValue("sellum/live_preview",  bool(self.cb_live.isChecked()))
             s.setValue("sellum/show_mask",     bool(self.cb_show_mask.isChecked()))
-            s.setValue("sellum/zoom",          float(getattr(self, "_zoom", 1.0)))
             try: s.sync()
             except Exception: pass
         except Exception: pass
@@ -1697,8 +1783,7 @@ class SelectiveLuminanceCorrection(QDialog):
             self.cb_small_preview.setChecked(bool(s.value("sellum/small_preview", True, type=bool)))
             self.cb_live.setChecked(bool(s.value("sellum/live_preview", True, type=bool)))
             self.cb_show_mask.setChecked(bool(s.value("sellum/show_mask", False, type=bool)))
-            z = float(s.value("sellum/zoom", 1.0))
-            self._zoom = max(0.05, min(16.0, z))
+            # no saved zoom: the preview opens fitted
         except Exception: pass
 
     def resizeEvent(self, ev):
@@ -1711,8 +1796,9 @@ class SelectiveLuminanceCorrection(QDialog):
         self._geom_restored = True
         def _after():
             self._restore_window_state()
+            self._fit_left_pane()            # fonts and style are final now
             self._last_base = None
-            self._recompute_mask_and_preview()
+            self._recompute_mask_and_preview()   # fitted: _fit_mode is on
         QTimer.singleShot(0, _after)
 
     def closeEvent(self, ev):

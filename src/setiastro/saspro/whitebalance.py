@@ -1,6 +1,7 @@
 #saspro/whitebalance.py
 from __future__ import annotations
 
+import weakref
 import numpy as np
 from typing import Dict, Tuple, Optional
 
@@ -58,6 +59,54 @@ def _np_trapezoid_compat(y, x):
 # ----------------------------
 # Core WB implementations
 # ----------------------------
+# Approximate CIE 1931 2° color matching functions (Wyman, Sloan, Shirley-style
+# analytic fits) at 380..780 nm in 5 nm steps, for the results plot's
+# blackbody locus. They do not depend on temperature, so they are evaluated
+# once rather than for each of the ~500 locus points a figure draws (that was
+# nearly all of the plot's half second).
+_CIE_CMF_CACHE: Optional[tuple] = None
+
+
+def _cie_cmf_tables():
+    global _CIE_CMF_CACHE
+    if _CIE_CMF_CACHE is None:
+        wl = np.arange(380.0, 781.0, 5.0, dtype=np.float64)
+
+        def x_bar(l):
+            t1 = (l - 442.0) * (0.0624 if l < 442.0 else 0.0374)
+            t2 = (l - 599.8) * (0.0264 if l < 599.8 else 0.0323)
+            t3 = (l - 501.1) * (0.0490 if l < 501.1 else 0.0382)
+            return (
+                0.362 * np.exp(-0.5 * t1 * t1)
+                + 1.056 * np.exp(-0.5 * t2 * t2)
+                - 0.065 * np.exp(-0.5 * t3 * t3)
+            )
+
+        def y_bar(l):
+            t1 = (l - 568.8) * (0.0213 if l < 568.8 else 0.0247)
+            t2 = (l - 530.9) * (0.0613 if l < 530.9 else 0.0322)
+            return (
+                0.821 * np.exp(-0.5 * t1 * t1)
+                + 0.286 * np.exp(-0.5 * t2 * t2)
+            )
+
+        def z_bar(l):
+            t1 = (l - 437.0) * (0.0845 if l < 437.0 else 0.0278)
+            t2 = (l - 459.0) * (0.0385 if l < 459.0 else 0.0725)
+            return (
+                1.217 * np.exp(-0.5 * t1 * t1)
+                + 0.681 * np.exp(-0.5 * t2 * t2)
+            )
+
+        x = np.array([x_bar(v) for v in wl], dtype=np.float64)
+        y = np.array([y_bar(v) for v in wl], dtype=np.float64)
+        z = np.array([z_bar(v) for v in wl], dtype=np.float64)
+        for arr in (x, y, z):
+            arr.flags.writeable = False
+        _CIE_CMF_CACHE = (x, y, z)
+    return _CIE_CMF_CACHE
+
+
 def build_star_color_ratios_figure(raw_pixels: np.ndarray, after_pixels: np.ndarray):
     """
     Build the SAS-style diagnostic plot and return a matplotlib Figure.
@@ -152,36 +201,8 @@ def build_star_color_ratios_figure(raw_pixels: np.ndarray, after_pixels: np.ndar
         spd /= np.max(spd)
 
         # --- Approximate CIE 1931 2° color matching functions ---
-        # Wyman, Sloan, Shirley-style analytic fits
-        def x_bar(l):
-            t1 = (l - 442.0) * (0.0624 if l < 442.0 else 0.0374)
-            t2 = (l - 599.8) * (0.0264 if l < 599.8 else 0.0323)
-            t3 = (l - 501.1) * (0.0490 if l < 501.1 else 0.0382)
-            return (
-                0.362 * np.exp(-0.5 * t1 * t1)
-                + 1.056 * np.exp(-0.5 * t2 * t2)
-                - 0.065 * np.exp(-0.5 * t3 * t3)
-            )
-
-        def y_bar(l):
-            t1 = (l - 568.8) * (0.0213 if l < 568.8 else 0.0247)
-            t2 = (l - 530.9) * (0.0613 if l < 530.9 else 0.0322)
-            return (
-                0.821 * np.exp(-0.5 * t1 * t1)
-                + 0.286 * np.exp(-0.5 * t2 * t2)
-            )
-
-        def z_bar(l):
-            t1 = (l - 437.0) * (0.0845 if l < 437.0 else 0.0278)
-            t2 = (l - 459.0) * (0.0385 if l < 459.0 else 0.0725)
-            return (
-                1.217 * np.exp(-0.5 * t1 * t1)
-                + 0.681 * np.exp(-0.5 * t2 * t2)
-            )
-
-        x = np.array([x_bar(v) for v in wl], dtype=np.float64)
-        y = np.array([y_bar(v) for v in wl], dtype=np.float64)
-        z = np.array([z_bar(v) for v in wl], dtype=np.float64)
+        # Temperature-independent, so evaluated once (see _cie_cmf_tables)
+        x, y, z = _cie_cmf_tables()
 
         # Integrate SPD * CMFs
         X = _np_trapezoid_compat(spd * x, wl)
@@ -602,6 +623,7 @@ def apply_white_balance_to_doc(doc, preset: Optional[Dict] = None):
                 base_n,
                 threshold=thr,
                 autostretch=False,
+                with_overlay=False,
                 reuse_cached_sources=False,
                 return_star_colors=False,
                 use_color_matrix=use_cm,
@@ -629,7 +651,7 @@ def apply_white_balance_to_doc(doc, preset: Optional[Dict] = None):
     m = _active_mask_array_from_doc(doc)
     if m is not None:
         if out.ndim == 3:
-            m3 = np.repeat(m[..., None], 3, axis=2).astype(np.float32, copy=False)
+            m3 = m[..., None].astype(np.float32, copy=False)   # broadcasts over RGB
         else:
             m3 = m.astype(np.float32, copy=False)
         base_for_blend = _to_float01(np.asarray(doc.image).astype(np.float32, copy=False))
@@ -972,6 +994,12 @@ class WhiteBalanceDialog(QDialog):
         # subsequent re-detection (e.g. slider move) builds the overlay too.
         self._preview_shown = False
 
+        # Stars from the last finished detection and what they were detected
+        # on. Show Preview reuses them when nothing has changed, instead of
+        # running the whole SEP waterfall again just to draw the overlay.
+        self._last_detection = None
+        self._running_detection = None
+
     def _cfg_gain(self, box: QDoubleSpinBox, val: float):
         box.setRange(0.5, 1.5); box.setDecimals(3); box.setSingleStep(0.01); box.setValue(val)
 
@@ -1125,6 +1153,20 @@ class WhiteBalanceDialog(QDialog):
 
         from setiastro.saspro.imageops.starbasedwhitebalance import StarDetectionWorker
         img = _to_float01(np.asarray(self.doc.image))
+        try:
+            image_ref = weakref.ref(self.doc.image)
+        except TypeError:
+            image_ref = None
+        last = self._last_detection
+        reuse = bool(
+            self._preview_shown and last is not None and image_ref is not None
+            and last["doc"] is self.doc
+            and last["image"] is not None and last["image"]() is self.doc.image
+            and last["auto"] == auto_sigma
+            and (auto_sigma or last["thr"] == thr)
+        )
+        self._running_detection = {"doc": self.doc, "image": image_ref,
+                                   "auto": auto_sigma, "thr": thr}
         # In Auto mode the worker ignores `thr` and runs the σ ladder itself,
         # emitting the resolved σ back via finished(overlay_or_None, count, used_σ).
         # with_overlay controls whether the slow stretch + ellipse pass runs;
@@ -1133,6 +1175,11 @@ class WhiteBalanceDialog(QDialog):
             img, thr, auto_stretch, parent=self,
             auto_sigma=auto_sigma,
             with_overlay=self._preview_shown,
+            # The preview label shows the overlay shrunk; no full-res stretch
+            overlay_max_side=2048,
+            known_sources=last["sources"] if reuse else None,
+            known_count=last["count"] if reuse else 0,
+            known_sigma=last["sigma"] if reuse else 0.0,
         )
         worker.detected.connect(self._on_worker_done)
         worker.failed.connect(self._on_worker_failed)
@@ -1152,6 +1199,12 @@ class WhiteBalanceDialog(QDialog):
                 worker.wait(2000)  # wait up to 2s — already done since signal fired
             QTimer.singleShot(0, self._update_star_preview)
             return
+
+        # Keep what was found, so Show Preview can reuse it
+        run = self._running_detection
+        if worker is not None and run is not None and getattr(worker, "sources", None) is not None:
+            self._last_detection = dict(run, sources=worker.sources,
+                                        count=int(count), sigma=float(used_sigma))
 
         auto_on = bool(self.auto_sigma_chk.isChecked()) if hasattr(self, "auto_sigma_chk") else False
 
@@ -1440,6 +1493,7 @@ class WhiteBalanceDialog(QDialog):
                     base,
                     threshold=thr,
                     autostretch=False,
+                    with_overlay=False,          # the overlay is discarded here
                     reuse_cached_sources=True,
                     return_star_colors=True,
                     use_color_matrix=use_cm,     # ← pass through
@@ -1464,7 +1518,7 @@ class WhiteBalanceDialog(QDialog):
                 # Optional destination-mask blend, same as headless path
                 m = _active_mask_array_from_doc(self.doc)
                 if m is not None:
-                    m3 = np.repeat(m[..., None], 3, axis=2).astype(np.float32, copy=False)
+                    m3 = m[..., None].astype(np.float32, copy=False)   # broadcasts over RGB
                     base_for_blend = _to_float01(
                         np.asarray(self.doc.image).astype(np.float32, copy=False)
                     )

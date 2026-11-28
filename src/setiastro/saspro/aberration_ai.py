@@ -1001,7 +1001,6 @@ class AberrationAIDialog(QDialog):
         btn_browse = QPushButton(self.tr("Browse…")); btn_browse.clicked.connect(self._browse_active_model)
         row.addWidget(self.model_label, 1)
         row.addWidget(btn_browse)
-        row.addWidget(make_help_button("aberration_ai", self))
         v.addLayout(row)
         # Custom model row (NEW)
         row_custom = QHBoxLayout()
@@ -1081,6 +1080,7 @@ class AberrationAIDialog(QDialog):
             )
             drag_row.addWidget(self.preset_drag_handle)
             drag_row.addStretch(1)   # push grip hard to the LEFT edge
+            drag_row.addWidget(make_help_button("aberration_ai", self))
             v.addLayout(drag_row)
         except Exception:
             pass

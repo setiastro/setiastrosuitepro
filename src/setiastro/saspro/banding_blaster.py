@@ -523,6 +523,9 @@ class BandingBlasterDialog(QDialog):
         lay.addLayout(info)
 
         bottom = QHBoxLayout()
+        # Grip + help: their own row under the buttons
+        grip_row = QHBoxLayout()
+        grip_row.setContentsMargins(0, 0, 0, 0)
         try:
             from setiastro.saspro.shortcuts import PresetDragHandle
             from setiastro.saspro.help_support import make_help_button
@@ -534,8 +537,9 @@ class BandingBlasterDialog(QDialog):
                     "Drop directly on an image to apply them headlessly."),
                 parent=self,
             )
-            bottom.addWidget(self.preset_drag_handle)
-            bottom.addWidget(make_help_button(COMMAND_ID, self))
+            grip_row.addWidget(self.preset_drag_handle)
+            grip_row.addStretch(1)
+            grip_row.addWidget(make_help_button(COMMAND_ID, self))
         except Exception:
             pass
         bottom.addStretch(1)
@@ -550,6 +554,7 @@ class BandingBlasterDialog(QDialog):
         bottom.addWidget(self.btn_reset)
         bottom.addWidget(self.btn_close)
         lay.addLayout(bottom)
+        lay.addLayout(grip_row)
 
         for sig in (self.rb_horiz.toggled, self.cb_protect.toggled):
             sig.connect(lambda *_: self._on_controls_changed())

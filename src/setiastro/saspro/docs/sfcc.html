@@ -46,73 +46,29 @@ telescope's filter/sensor/light-pollution curves to predict the expected
 model, and applies it.</p>
 
 <h2>1. Using the tool</h2>
-<p>The dialog is a two-step workflow with a shared panel of filter/sensor
-selections between them. Both steps run against the active image window;
-switching the active window between runs is fine.</p>
+<p>The window is the settings for your optical chain and one button. Pick the
+chain once (it is remembered), make the image you want calibrated the active
+view, and press <b>Calibrate</b>. SASpro finds the stars, looks up their
+spectra, measures them, fits the correction and applies it, then shows a
+one-line summary and every chart beside the settings. On a 12&nbsp;Mpx frame
+that takes about 6&ndash;10&nbsp;seconds; the first run of a session is the
+slower one, because SIMBAD is checked and the curve files are read once.</p>
+<p>The image needs a plate solution. If it has none, Calibrate offers to run
+the plate solver first. <b>Undo</b> reverts the calibration like any other
+edit, so trying a different white reference is just Undo and Calibrate
+again.</p>
 
-<h3>Step 1 &mdash; Fetch stars &amp; spectra</h3>
-<p>The <b>White Reference</b> dropdown picks the SED that defines &ldquo;neutral
-grey&rdquo; (default <code>G2V</code>; Vega / A0V is the usual alternative). It
-only affects the reference integrals <code>S_ref_c</code>, nothing else at this
-stage.</p>
-<p>Click <b>Step 1: Fetch Stars &amp; Spectra from Current View</b> and the
-pipeline runs:</p>
-<ul>
-  <li><b>SEP detection</b> on the frame's luminance. The <b>Auto &sigma;</b>
-      checkbox (default on) runs the waterfall described in &sect;2.1; uncheck
-      and dial the <b>Star detect &sigma;</b> spinbox to force a value.
-      Detections are kept only when their flux-radius is in <code>(0.2, 10]
-      px</code>.</li>
-  <li><b>WCS projection</b> of every surviving source to RA/Dec, using the
-      header's own WCS (deprecated <code>RADECSYS</code> and <code>EPOCH</code>
-      keywords are normalized first).</li>
-  <li><b>Bulk Gaia match</b> against SASpro's local Gaia library at a
-      3&nbsp;arcsec tolerance; each hit carries a Gaia source&nbsp;id for XP
-      lookup later.</li>
-  <li><b>SIMBAD region query</b> over a circle covering the field (with
-      retries), to tag matched stars with spectral type, main id, and
-      Johnson B/V/R magnitudes.</li>
-  <li><b>Pickles template match</b> for every SIMBAD spectral type (&sect;2.3).
-      Stars without a spectral type but with B and V get their letter class
-      inferred from <code>B&minus;V</code> (&sect;2.3).</li>
-  <li>For Gaia-matched stars that still have no Pickles template, SASpro
-      computes <b>synthetic Johnson B/V/R from the Gaia XP spectrum</b> via
-      <code>gaiaxpy.generate(system=JKC)</code>, caches it, and infers the
-      letter class from the synthetic <code>B&minus;V</code>.</li>
-  <li>Stars with no main id but a Gaia id get a <b>SIMBAD <code>ids</code>
-      lookup</b> in batches of 200 to resolve a Gaia DR3 source id.</li>
-</ul>
-<p>The result is a <b>summary plot</b> in two panels. The status line below
-shows the raw counts; the plot shows the <i>quality</i> of what you got.</p>
-<ul>
-  <li><b>Left: spectral-type histogram.</b> Blue bars are stars with a Pickles
-      template matched from a SIMBAD type; orange bars overlay stars whose
-      letter class came from <code>B&minus;V</code> inference (SIMBAD or Gaia
-      synthetic) because no spectral type was published. A healthy
-      astrophotography field is bell-shaped around F / G / K with tails to A
-      and M; a histogram that's all one letter usually means the SIMBAD query
-      failed or the field is pathologically narrow (star cluster, galactic
-      plane crowding). Blue dominating is good; a lot of orange means SASpro
-      had to fall back to colour-only typing for most of the field.</li>
-  <li><b>Right: calibration-source pie.</b> Four mutually-exclusive buckets:
-      <b>Gaia XP</b> (green &mdash; the star has its own calibrated spectrum,
-      the gold standard), <b>Pickles via SIMBAD</b> (blue &mdash; typed by
-      SIMBAD, approximated with a library SED), <b>Pickles via B&minus;V</b>
-      (orange &mdash; typed from colour, same approximation) and <b>no
-      spectrum</b> (grey &mdash; dropped at Step 2). More green is strictly
-      better: Gaia XP uses the star's actual spectrum. If grey dominates, your
-      field is outside Gaia DR3's XP coverage or your local Gaia library
-      doesn't have the right spatial group installed &mdash; Step 2 will still
-      run, but on fewer stars.</li>
-</ul>
-
-<h3>The shared panel &mdash; filter/sensor selections</h3>
-<p>Pick the actual optical chain: <b>R Filter</b>, <b>G Filter</b>,
+<h3>The settings</h3>
+<p>The <b>White Reference</b> picks the SED that defines &ldquo;neutral
+grey&rdquo; (default <code>G2V</code>, the Sun; Vega / A0V is the usual
+alternative). The calibrated colours are relative to it: a star with this
+spectrum comes out R&nbsp;=&nbsp;G&nbsp;=&nbsp;B (&sect;2.5).</p>
+<p>Then the actual optical chain: <b>R Filter</b>, <b>G Filter</b>,
 <b>B Filter</b>, <b>Sensor (QE)</b> and up to two <b>LP/Cut Filter</b> curves
 (e.g. an IR-cut and a light-pollution filter). <code>(None)</code> is a
-flat-unity curve. These are read from the shipped
-<code>sasp_data.fits</code> plus a per-user <code>usercustomcurves.fits</code>.
-Choices persist via <code>QSettings</code>.</p>
+flat-unity curve. These are read from the shipped <code>sasp_data.fits</code>
+plus a per-user <code>usercustomcurves.fits</code>, and every choice is
+remembered.</p>
 <ul>
   <li><b>Filter / Sensor Curves&hellip;</b> &mdash; opens the
       <a href="curve_manager.html" style="color:#88ffcc;">Curve Manager</a>, the one
@@ -123,10 +79,110 @@ Choices persist via <code>QSettings</code>.</p>
       your current R/G/B, sensor and LP choices plotted, and anything you save
       shows up in these lists immediately. (It replaces the old
       <i>Add Custom</i> / <i>Remove</i> buttons.)</li>
+  <li><b>Open SASP Viewer</b> &mdash; plots the chain against any star; see
+      below.</li>
+  <li><b>Background Neutralization</b> &mdash; runs the standalone BN tool first
+      (so the colour fit isn't fighting a channel pedestal) and again on the
+      final image.</li>
+  <li><b>Star detect &sigma;</b> with <b>Auto</b> (default on) &mdash; the
+      detection threshold. Auto finds it for you (&sect;2.1); uncheck Auto to
+      force a value.</li>
+</ul>
+
+<h3>What Calibrate does</h3>
+<ul>
+  <li><b>SEP detection</b> on the frame's luminance, with the Auto&nbsp;&sigma;
+      search of &sect;2.1. Detections are kept only when their flux-radius is in
+      <code>(0.2, 10]&nbsp;px</code>. The stars are found <b>once</b>, and the
+      photometry later measures these same stars. (The old two-step window found
+      them all over again in Step&nbsp;2.)</li>
+  <li><b>WCS projection</b> of every surviving source to RA/Dec, using the
+      header's own WCS (deprecated <code>RADECSYS</code> and <code>EPOCH</code>
+      keywords are normalized first).</li>
+  <li><b>Bulk Gaia match</b> against SASpro's local Gaia library at a
+      3&nbsp;arcsec tolerance; each hit carries a Gaia source&nbsp;id for its XP
+      spectrum. The matches also check the plate solution: one that matches Gaia
+      no better than chance stops the run and offers a blind re-solve.</li>
+  <li><b>SIMBAD region query</b> over a circle covering the field (with mirror
+      failover and bounded timeouts), to tag matched stars with spectral type,
+      main id, Johnson B/V/R magnitudes and SIMBAD's identifier list. A star SIMBAD
+      knows but the positional Gaia match missed gets its Gaia DR3 id from that
+      list. If SIMBAD is down, the run carries on with Gaia XP alone.</li>
+  <li><b>Pickles template match</b> for every SIMBAD spectral type (&sect;2.3).
+      Stars without a spectral type but with B and V get their letter class
+      inferred from <code>B&minus;V</code> (&sect;2.3). Gaia-matched stars get
+      <b>synthetic Johnson B/V/R from their XP spectrum</b> via
+      <code>gaiaxpy.generate(system=JKC)</code> (cached), and a letter class from
+      the synthetic <code>B&minus;V</code> where SIMBAD had none.</li>
+  <li><b>Calibrators</b>: the stars with a Gaia XP spectrum when there are at
+      least 50 of them; Pickles templates fill in only below that. A template
+      picked from a SIMBAD type is a dust-free spectrum, so in a reddened field it
+      predicts the star too blue (on ngc1333, measured/expected R/G had an IQR of
+      1.21&ndash;1.79 for templates against 1.02&ndash;1.05 for XP).</li>
+  <li><b>Photometry</b> of the <b>brightest 500</b> matched stars that have a
+      spectrum: annulus-background-subtracted aperture sums per channel.</li>
+  <li><b>The model</b> (&sect;2.4) is fitted and <b>applied</b> (&sect;2.5).</li>
+</ul>
+
+<h3>Reading the results</h3>
+<p>The line above the charts gives the number of stars used, split into Gaia XP
+spectra and Pickles templates, the time the run took, the <b>model chosen</b>
+(slope-only / affine / quadratic) and the net R and B scalings at
+<code>x = 1</code>. Four charts follow.</p>
+<p><b>The residuals, before and after</b> (top row). Both panels plot the
+<b>fractional residual</b> <code>(measured_ratio / expected_ratio) &minus; 1</code>
+on the y-axis against the <b>expected ratio</b> on the x-axis. Red circles are
+the <code>R/G</code> channel, blue squares are <code>B/G</code>. The shaded bands
+behind each colour are the <b>Q1&ndash;Q3 interquartile range</b> &mdash; the
+central half of the scatter.</p>
+<ul>
+  <li><b>BEFORE (left)</b> &mdash; the raw situation. A horizontal cloud
+      centred on zero means the camera is already close to right. A <i>sloped</i>
+      trend (points high on the left, low on the right or vice versa) says the
+      camera's response doesn't scale linearly with the true colour &mdash;
+      precisely what SFCC is fixing. A big vertical offset (whole cloud shifted
+      away from zero) is a flat colour cast, trivially corrected by any of the
+      three models.</li>
+  <li><b>AFTER (right)</b> &mdash; the same stars after the correction.
+      Both colours should collapse to a tight horizontal band around zero. If
+      they do, calibration worked. If a residual tilt or curvature remains,
+      the chosen model couldn't fit the shape &mdash; usually because the
+      camera's response has a sharp spectral feature the quadratic can't track
+      (narrowband interference, uncoated filter wobble). A big vertical spread
+      with no trend means noisy photometry (short exposure, undersampled
+      stars) rather than a bad model.</li>
+  <li><b>Shaded Q1&ndash;Q3 band shrinking vs the before panel</b> is the
+      clearest sign the fit removed systematic colour error. If it doesn't
+      shrink, the fit found nothing it could straighten &mdash; your frame
+      was already colour-flat, or the model is wrong for your data.</li>
+</ul>
+<p><b>The stars</b> (bottom row) show the <i>quality</i> of what the field
+gave you.</p>
+<ul>
+  <li><b>Left: spectral-type histogram.</b> Blue bars are stars with a Pickles
+      template matched from a SIMBAD type; orange bars overlay stars whose
+      letter class came from <code>B&minus;V</code> inference (SIMBAD or Gaia
+      synthetic) because no spectral type was published. A healthy
+      astrophotography field is bell-shaped around F / G / K with tails to A
+      and M; a histogram that's all one letter usually means the SIMBAD query
+      failed or the field is pathologically narrow (star cluster, galactic
+      plane crowding). Blue dominating is good; a lot of orange means SASpro
+      had to fall back to colour-only typing for most of the field. With
+      dozens of types, every few bars are labelled.</li>
+  <li><b>Right: calibration-source pie.</b> Four mutually-exclusive buckets:
+      <b>Gaia XP</b> (green &mdash; the star has its own calibrated spectrum,
+      the gold standard), <b>Pickles via SIMBAD</b> (blue &mdash; typed by
+      SIMBAD, approximated with a library SED), <b>Pickles via B&minus;V</b>
+      (orange &mdash; typed from colour, same approximation) and <b>no
+      spectrum</b> (grey &mdash; not used). More green is strictly
+      better: Gaia XP uses the star's actual spectrum. If grey dominates, your
+      field is outside Gaia DR3's XP coverage or your local Gaia library
+      doesn't have the right spatial group installed &mdash; the calibration
+      still runs, but on fewer stars.</li>
 </ul>
 
 <h3>The SASP Viewer &mdash; see your optical chain against any star</h3>
-<p>Click <b>Open SASP Viewer</b> (next to the Step 1 button) to launch a
+<p>Click <b>Open SASP Viewer</b> (under the filter lists) to launch a
 standalone window that <i>plots</i> any stellar SED through any R/G/B filter
 set, any sensor QE, and up to two LP/cut filters. It doesn't touch the image
 &mdash; it's a free-form exploration of what your optical chain actually
@@ -186,66 +242,20 @@ redraw.</p>
       Custom Filter/Sensor Curve&hellip;</b> runs, open the viewer and plot
       it against an A0V. If the dashed curve has spikes, dropouts, or a
       wrong-side slope, the digitize/CSV import captured something wrong and
-      you can re-run before trusting it in Step 2.</li>
+      you can re-run before you calibrate with it.</li>
   <li><b>Explore where your green channel actually sits.</b> Change the star
       from early B to late M in sequence; the gold G response shifts right
       with cooler stars because the SED is tilting toward red through the
       same green filter. This is a direct intuition for why a per-channel
       colour correction needs to depend on the star's own colour &mdash;
-      which is what Step 2 does.</li>
-</ul>
-
-<h3>Step 2 &mdash; Run color calibration</h3>
-<p>With Step 1 done and the chain picked, click <b>Step 2: Run Color
-Calibration</b>. SASpro re-detects stars on the live frame, matches them
-within 3&nbsp;px to the Step-1 star list, caps the sample to the <b>brightest
-500</b> by SEP flux, performs annulus-background-subtracted aperture
-photometry per channel, computes the model (&sect;2.4) and applies it (&sect;2.5).</p>
-<ul>
-  <li><b>Background Neutralization</b> &mdash; runs the standalone BN tool first
-      (so the colour fit isn't fighting a channel pedestal) and again on the
-      final image.</li>
-  <li><b>3&times;3 Color Matrix Correction</b> &mdash; hidden by default; when
-      enabled, fits an extra cross-channel matrix after the per-channel scaling
-      (&sect;2.6).</li>
-  <li>A dialog reports the <b>model chosen</b> (slope-only / affine / quadratic),
-      the star count split by source, and the net R and B scalings at
-      <code>x = 1</code>.</li>
-</ul>
-
-<h3>Reading the before/after residuals plot</h3>
-<p>Two side-by-side panels, both plotting the <b>fractional residual</b>
-<code>(measured_ratio / expected_ratio) &minus; 1</code> on the y-axis against
-the <b>expected ratio</b> on the x-axis. Red circles are the <code>R/G</code>
-channel, blue squares are <code>B/G</code>. The shaded bands behind each colour
-are the <b>Q1&ndash;Q3 interquartile range</b> &mdash; the central half of the
-scatter.</p>
-<ul>
-  <li><b>BEFORE (left panel)</b> &mdash; the raw situation. A horizontal cloud
-      centred on zero means the camera is already close to right. A <i>sloped</i>
-      trend (points high on the left, low on the right or vice versa) says the
-      camera's response doesn't scale linearly with the true colour &mdash;
-      precisely what SFCC is fixing. A big vertical offset (whole cloud shifted
-      away from zero) is a flat colour cast, trivially corrected by any of the
-      three models.</li>
-  <li><b>AFTER (right panel)</b> &mdash; the same stars after the correction.
-      Both colours should collapse to a tight horizontal band around zero. If
-      they do, calibration worked. If a residual tilt or curvature remains,
-      the chosen model couldn't fit the shape &mdash; usually because the
-      camera's response has a sharp spectral feature the quadratic can't track
-      (narrowband interference, uncoated filter wobble). A big vertical spread
-      with no trend means noisy photometry (short exposure, undersampled
-      stars) rather than a bad model.</li>
-  <li><b>Shaded Q1&ndash;Q3 band shrinking vs the before panel</b> is the
-      clearest sign the fit removed systematic colour error. If it doesn't
-      shrink, the fit found nothing it could straighten &mdash; your frame
-      was already colour-flat, or the model is wrong for your data.</li>
+      which is what SFCC does.</li>
 </ul>
 
 <h3>Gradient extraction (Beta, hidden)</h3>
-<p>A separate <b>Run Gradient Extraction</b> button and <b>method combo</b>
-(<code>poly2</code>, <code>poly3</code>, <code>rbf</code>) are hidden by
-default but available on code paths that enable them. It uses the same
+<p>Not in the window: the <b>Run Gradient Extraction</b> button and its
+<b>method combo</b> (<code>poly2</code>, <code>poly3</code>, <code>rbf</code>)
+were always hidden, and the one-click window leaves them out. The code path
+remains (<code>run_gradient_extraction</code>). It uses the same
 spectra and photometry to measure a per-channel <b>spectrophotometric
 gradient</b> and remove it &mdash; see &sect;2.7.</p>
 <p>The result pane shows three side-by-side panels, one per channel, each a
@@ -283,6 +293,14 @@ threshold:</p>
 to work with. Detections are filtered by flux-radius to <code>(0.2, 10]&nbsp;px</code>
 to drop galaxies/plate flaws. Only <code>sep.extract</code> is retried per rung
 &mdash; the one-off background estimation runs once.</p>
+<p>The search lands on the same &sigma; as stepping down the ladder from the
+top, in two or three SEP passes instead of up to seven: detection counts only
+grow as &sigma; drops, so the answer is the &sigma; that reaches 1200 while the
+next stricter one does not, and a quick count of image peaks picks where to
+start. SEP's deblender draws random numbers, so the same frame used to come
+back with slightly different star sizes (and so aperture radii) from one run to
+the next; the generator is now reseeded before every pass, and the same image
+always gives the same stars and the same calibration.</p>
 
 <h3>2.2 System throughput &amp; expected integrals</h3>
 <p>The optical chain combines multiplicatively on a shared 3000&ndash;11000&nbsp;&Aring;
@@ -290,7 +308,11 @@ to drop galaxies/plate flaws. Only <code>sep.extract</code> is retried per rung
 <div class="matheq">T^{c}_{\mathrm{sys}}(\lambda)=T^{c}_{\mathrm{filter}}(\lambda)\cdot QE(\lambda)\cdot T_{\mathrm{LP}_1}(\lambda)\cdot T_{\mathrm{LP}_2}(\lambda)</div>
 <p>For each star, the <b>expected</b> integrated flux through channel <code>c</code>
 is</p>
-<div class="matheq">S^{c}_{\mathrm{star}}=\int f_{\mathrm{star}}(\lambda)\,T^{c}_{\mathrm{sys}}(\lambda)\,d\lambda</div>
+<div class="matheq">S^{c}_{\mathrm{star}}=\int f_{\mathrm{star}}(\lambda)\,\lambda\,T^{c}_{\mathrm{sys}}(\lambda)\,d\lambda</div>
+<p>The <code>&lambda;</code> makes it a photon count: a sensor counts photons,
+each of energy <code>hc/&lambda;</code>. (Until 2026-11-28 the integrals were
+energy; once the white reference divides out, the difference is about
+1&nbsp;%.)</p>
 <p>where <code>f_star(&lambda;)</code> is either the Gaia XP calibrated
 spectrum (interpolated onto the grid) or the matched Pickles SED. Integrals are
 cached per <code>(source_id, system_key)</code> in an SQLite store so repeat
@@ -300,11 +322,15 @@ Reference integrals <code>S_ref_c</code> are the same formula applied to the
 chosen white reference (default G2V).</p>
 
 <h3>2.3 Spectral-type &rarr; Pickles template</h3>
-<p>SIMBAD spectral type (e.g. <code>K2III</code>) is matched against the
-available Pickles extensions by letter class, subclass, and luminosity &mdash;
-<b>exact match first</b>, then same letter + same luminosity + nearest
-subclass, then same letter + any luminosity + nearest subclass, finally all
-templates in that letter. When SIMBAD gives no type but SIMBAD or Gaia-synthetic
+<p>SIMBAD spectral type (e.g. <code>K2III</code>, <code>B8/9V</code>,
+<code>M6/8III</code>) is matched against the available Pickles extensions by
+letter class, subclass, and luminosity &mdash; <b>exact match first</b>, then the
+nearest subclass in the same luminosity class. With no luminosity class, dwarfs
+come first (V, then IV, III, II, I); with no subclass, the middle of the
+library's subclasses for that letter. Pickles range names count as their
+midpoint (<code>B57V</code> is B6). Until 2026-11-28 ties went alphabetically, so
+a bare <code>G</code> or <code>K</code> became the supergiant <code>G0I</code> or
+<code>K01II</code>. When SIMBAD gives no type but SIMBAD or Gaia-synthetic
 Johnson magnitudes are available, the letter is inferred from <code>B&minus;V</code>:</p>
 <div class="eq">letter = B   if B-V &lt; 0.00
          A   if 0.00 &le; B-V &lt; 0.30
@@ -316,14 +342,14 @@ Johnson magnitudes are available, the letter is inferred from <code>B&minus;V</c
 say, the main-sequence <code>K5V</code> rather than <code>K5III</code>).</p>
 
 <h3>2.4 Photometry &amp; the three-model fit</h3>
-<p>Step-1 catalogue stars are re-matched to Step-2 SEP detections within 3&nbsp;px
-and capped to the brightest 500. For each kept star the aperture radii scale
+<p>The stars found at detection are measured where they were found (they are
+not detected a second time), capped to the brightest 500. For each kept star the aperture radii scale
 with the SEP semi-major axis <code>a</code>:</p>
 <div class="matheq">r=\mathrm{clip}(2.5\,a,\,2,\,12)\,,\;r_{\mathrm{in}}=\mathrm{clip}(3r,6,40)\,,\;r_{\mathrm{out}}=\mathrm{clip}(5r,r_{\mathrm{in}}{+}2,60)</div>
 <p>Each channel's background-subtracted flux comes from an annulus-estimated
 pedestal:</p>
 <div class="matheq">F_c=\sum_{\mathrm{ap}}I_c-\mu^{c}_{\mathrm{bg}}\cdot A_{\mathrm{ap}}\,,\qquad \mu^{c}_{\mathrm{bg}}=\frac{\sum_{\mathrm{ann}}I_c}{A_{\mathrm{ann}}}</div>
-<p>Photometry runs in parallel across up to 8 threads; stars with any
+<p>Photometry runs for all stars in one pass; stars with any
 non-positive channel are dropped. The result is the two measured ratios per
 star compared against the predicted ratios from &sect;2.2:</p>
 <div class="matheq">\mathrm{meas}_{R/G}=\frac{F_R}{F_G}\,,\quad \mathrm{exp}_{R/G}=\frac{S^{R}_{\mathrm{star}}}{S^{G}_{\mathrm{star}}}</div>
@@ -342,18 +368,26 @@ magnitude in flux and residuals should be measured relative to the expected
 value. Quadratic is only entered when there are &ge;&nbsp;6 valid stars.</p>
 
 <h3>2.5 Applying the correction &mdash; pivot at median</h3>
-<p>With the winning per-channel polynomials, the per-pixel correction factors
-are the polynomials evaluated at the <i>measured</i> pixel ratio
-(<code>x_R = I_R/I_G</code>, <code>x_B = I_B/I_G</code>) and clipped to a safe
-dynamic range:</p>
-<div class="matheq">m_c(x)=\mathrm{clip}\!\left(a_c x^{2}+b_c x+c_c,\;0.25,\;4.0\right)</div>
+<p>The winning polynomial <code>p_c</code> maps a <i>measured</i> ratio to the
+star's <i>expected</i> ratio through the system. An expected ratio is not a
+colour: through Antlia R/G/B &times; IMX492 a G2V star expects R/G&nbsp;0.76,
+B/G&nbsp;1.04. The corrected ratio is therefore the expected ratio relative to the
+white reference's, and a pixel with ratio <code>x</code>
+(<code>x_R = I_R/I_G</code>, <code>x_B = I_B/I_G</code>) gets the gain</p>
+<div class="matheq">m_c(x)=\frac{\mathrm{clip}\!\left(a_c x^{2}+b_c x+c_c,\;0.25,\;4.0\right)}{x\;\cdot\;S^{\mathrm{ref}}_c/S^{\mathrm{ref}}_G}</div>
+<p>Before 2026-11-28 the gain was the clipped polynomial itself and the
+reference integrals were never used: a star's ratio was multiplied by its own
+expected ratio, a colour-dependent stretch, and the White Reference choice made
+no difference. Measured against each star's colour relative to G2V through the
+full system (87 Gaia XP stars on ngc1333), the output went from R/G&nbsp;0.87,
+B/G&nbsp;0.83 to 0.98 and 0.97.</p>
 <p>And applied with a <b>pivot at the channel median</b> rather than at zero,
 so the overall channel brightness is preserved and only the colour balance
 moves:</p>
 <div class="matheq-hero">\mathrm{out}_c=p_c+(I_c-p_c)\cdot m_c(x_c)\,,\quad p_c=\mathrm{median}(I_c)</div>
 <p>Green is the reference channel and is left unchanged. The clip at
-[0.25,&nbsp;4] prevents extreme ratios on bright or dark pixels from driving
-runaway gains (e.g. a saturated red core where <code>G&rarr;0</code>).</p>
+[0.25,&nbsp;4] on the polynomial prevents extreme ratios on bright or dark pixels
+from driving runaway gains (e.g. a saturated red core where <code>G&rarr;0</code>).</p>
 
 <h3>2.6 Optional 3&times;3 color matrix</h3>
 <div class="warn">Off by default and hidden in the current UI. Rarely needed

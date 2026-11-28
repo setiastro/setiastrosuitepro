@@ -72,8 +72,8 @@ class MenuMixin:
     
     def _strip_menu_text(self, text: str) -> str:
         """Remove decorations and mnemonics from menu text."""
-        # Remove ampersands (mnemonics)
-        text = text.replace("&", "")
+        # Remove mnemonics; "&&" is a literal &
+        text = text.replace("&&", "\0").replace("&", "").replace("\0", "&")
         # Could add more stripping logic here
         return text
     
@@ -143,6 +143,8 @@ class MenuMixin:
         m_edit = mb.addMenu(self.tr("&Edit"))
         m_edit.addAction(self.act_undo)
         m_edit.addAction(self.act_redo)
+        # History Explorer used to have a top-level History menu to itself.
+        m_edit.addAction(self.act_history_explorer)
         m_edit.addSeparator()
         m_edit.addAction(self.act_copy)
         m_edit.addAction(self.act_paste)
@@ -220,10 +222,8 @@ class MenuMixin:
 
         # Until 2.1 What's In My... and Header Mods & Misc were top-level
         # menus: they are submenus of Analysis and Tools now (menu_spec), and
-        # Scripts and Shortcuts are submenus of Workflows and View below.
-
-        m_hist = mb.addMenu(self.tr("&History"))
-        m_hist.addAction(self.act_history_explorer)
+        # Scripts and Shortcuts are submenus of Scripts & Workflows and View below.
+        # History Explorer is in Edit, under Undo / Redo.
 
         m_view = mb.addMenu(self.tr("&View"))
         m_view.addAction(self.act_cascade)
@@ -362,7 +362,9 @@ class MenuMixin:
         # first-time sync of label/checked state
         self._sync_link_action_state()
 
-        m_workflow = mb.addMenu(self.tr("&Workflows"))
+        # Was "&Workflows": once Scripts moved in, people could not find them,
+        # so the title names both. Alt+W stays.
+        m_workflow = mb.addMenu(self.tr("Scripts && &Workflows"))
         m_workflow.addAction(self.act_workflows)
         m_workflow.addAction(self.act_mini_workflows)
         m_workflow.addSeparator()
@@ -380,11 +382,11 @@ class MenuMixin:
         m_settings.addSeparator()
         m_settings.addAction(self.act_gaia_database)
 
-        # AppKit recognizes Help by its standard menu title and adds the
-        # system search field, including menu-location highlighting.
-        m_about = mb.addMenu(
-            self.tr("&Help") if native else self.tr("&About")
-        )
+        # Help on every platform (it was "&About" on Windows/Linux): it is
+        # where people look for the docs, updates and Search Commands. AppKit
+        # also recognizes Help by its standard title and adds the system
+        # search field, including menu-location highlighting.
+        m_about = mb.addMenu(self.tr("&Help"))
         from setiastro.saspro.gui.command_palette import palette_action
         m_about.addAction(palette_action(self, self._show_command_palette))
         m_about.addSeparator()
@@ -571,7 +573,7 @@ class MenuMixin:
         def _entry(act):
             if act is None:
                 return None
-            title = act.text().replace("&", "").strip()
+            title = act.text().replace("&&", "\0").replace("&", "").replace("\0", "&").strip()
             if not title:
                 return None
             icon = act.icon()

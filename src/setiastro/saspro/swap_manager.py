@@ -182,6 +182,50 @@ def _cleanup_orphaned_swap_sessions(root: str, keep_dir: str | None = None) -> N
         pass
 
 
+# Undo images are written in slices, and the writer checks for shutdown between
+# slices, so closing SASpro never waits for a whole image to reach the disk.
+_WRITE_CHUNK_BYTES = 64 * 1024 * 1024
+
+
+def _remove_quietly(path: str) -> None:
+    try:
+        os.remove(path)
+    except OSError:
+        pass
+
+
+def _save_npy_interruptible(path: str, arr: np.ndarray, stop) -> bool:
+    """
+    np.save(path, arr) in slices. Returns False, and leaves no file, when
+    *stop* is set part way. The bytes match np.save's (same .npy 1.0 header).
+    """
+    import io
+    arr = np.ascontiguousarray(arr)
+    fmt = np.lib.format
+    try:
+        hdr = io.BytesIO()
+        fmt.write_array_header_1_0(hdr, fmt.header_data_from_array_1_0(arr))
+    except Exception:
+        # A dtype the 1.0 header cannot describe: write it in one piece.
+        np.save(path, arr, allow_pickle=False)
+        return True
+    data = memoryview(arr.reshape(-1).view(np.uint8))
+    try:
+        with open(path, "wb") as f:
+            f.write(hdr.getvalue())
+            for i in range(0, len(data), _WRITE_CHUNK_BYTES):
+                if stop.is_set():
+                    break
+                f.write(data[i:i + _WRITE_CHUNK_BYTES])
+            else:
+                return True
+    except BaseException:
+        _remove_quietly(path)
+        raise
+    _remove_quietly(path)
+    return False
+
+
 class SwapManager:
     _instance = None
     _lock = threading.Lock()
@@ -365,8 +409,8 @@ class SwapManager:
                         if swap_id in self._tombstone:
                             continue
                         path = self.get_swap_path(swap_id)
-                        np.save(path, payload, allow_pickle=False)
-                        self._on_disk.add(swap_id)
+                        if _save_npy_interruptible(path, payload, self._stop):
+                            self._on_disk.add(swap_id)
                     finally:
                         self._pending_write.discard(swap_id)
 
@@ -467,10 +511,20 @@ class SwapManager:
         self._enqueue_delete(swap_id)
 
     def cleanup_all(self):
-        # stop worker
+        # Stop the writer and wait for it. Windows cannot delete a file that is
+        # still open, so removing the folder under a running write used to leave
+        # the whole image behind. Queued writes are skipped (the loop checks
+        # _stop before taking the next one) and a running one stops at its next
+        # slice, so this wait is short.
         try:
             self._stop.set()
             self._ioq.put(("stop", None, None))
+        except Exception:
+            pass
+        try:
+            t = getattr(self, "_io_thread", None)
+            if t is not None and t.is_alive() and t is not threading.current_thread():
+                t.join(timeout=10.0)
         except Exception:
             pass
 
@@ -482,12 +536,38 @@ class SwapManager:
         except Exception:
             pass
 
-        # nuke temp dir
         try:
-            if os.path.exists(self.temp_dir):
-                shutil.rmtree(self.temp_dir, ignore_errors=True)
+            self._remove_session_dir()
         except Exception as e:
             print(f"[SwapManager] Cleanup failed: {e}")
+
+    def _remove_session_dir(self):
+        """Delete this session's folder, owner file last: a folder that cannot
+        be emptied keeps its owner, so the next start removes it straight away
+        (an ownerless one waits _UNOWNED_MIN_IDLE_S)."""
+        d = self.temp_dir
+        if not d or not os.path.isdir(d):
+            return
+        stuck = False
+        for name in os.listdir(d):
+            if name == _OWNER_FILE:
+                continue
+            p = os.path.join(d, name)
+            try:
+                if os.path.isdir(p) and not os.path.islink(p):
+                    shutil.rmtree(p)
+                else:
+                    os.remove(p)
+            except OSError:
+                stuck = True
+        if stuck:
+            print(f"[SwapManager] Could not empty {d}; the next start removes it.")
+            return
+        _remove_quietly(os.path.join(d, _OWNER_FILE))
+        try:
+            os.rmdir(d)
+        except OSError:
+            shutil.rmtree(d, ignore_errors=True)
 
 
 # Global instance

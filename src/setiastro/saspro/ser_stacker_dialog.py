@@ -246,12 +246,15 @@ def _push_as_new_doc(
     title_suffix: str = "_stack",
     source: str = "Planetary Stacker",
     source_path: SourceSpec | None = None,
+    diag: dict | None = None,
 ):
     dm = getattr(main, "docman", None)
     if not dm or not hasattr(dm, "open_array"):
         return None
 
     try:
+        from setiastro.saspro.planetary_metadata import stack_header, stack_title
+
         base = ""
         if source_doc is not None:
             base = _derive_view_base_title(main, source_doc) or ""
@@ -260,11 +263,9 @@ def _push_as_new_doc(
         if not base:
             base = "Stack"
 
-        suf = title_suffix or ""
-        if suf and base.lower().endswith(suf.lower()):
-            title = base
-        else:
-            title = f"{base}{suf}"
+        # WinJUPOS-stamped when the capture time is known (see planetary_metadata)
+        observation = diag.get("observation") if isinstance(diag, dict) else None
+        title = stack_title(observation, base, title_suffix or "")
 
         x = np.asarray(arr)
         if x.ndim == 3 and x.shape[2] == 1:
@@ -276,6 +277,11 @@ def _push_as_new_doc(
             "is_mono": bool(x.ndim == 2),
             "source": source,
         }
+        if isinstance(diag, dict):
+            try:
+                meta["original_header"] = stack_header(observation, diag)
+            except Exception as e:
+                print(f"[Planetary Stacker] stack header not built: {e}")
 
         newdoc = dm.open_array(x, metadata=meta, title=title)
 
@@ -2235,6 +2241,8 @@ class SERStackerDialog(QDialog):
 
         self._append_log(f"Done. Kept {diag.get('frames_kept')} / {diag.get('frames_total')}")
         self._append_log(f"Track: {diag.get('track_mode')}  ROI: {diag.get('roi_used')}")
+        for line in (diag.get("observation") or {}).get("notes", ()):
+            self._append_log(line)
 
         newdoc = _push_as_new_doc(
             self._main,
@@ -2243,6 +2251,7 @@ class SERStackerDialog(QDialog):
             title_suffix="_stack",
             source="Planetary Stacker",
             source_path=self._source,
+            diag=diag,
         )
 
         if newdoc is not None:

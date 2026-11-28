@@ -1327,6 +1327,7 @@ _register(Tool(
         Param("compression_factor", "float", 1.5, "Coarse-scale compression.", min=0.1, max=5.0),
         Param("mask_gamma", "float", 5.0, "Gamma on the luminance mask; higher confines the effect to the "
               "brightest areas.", min=0.1, max=10.0),
+        Param("amount", "float", 1.0, "Mix with the original (1 = full effect).", min=0.0, max=1.0),
     ], aliases=["hdr", "wavescalehdr"],
     mask="the luminance mask the HDR blend used (the app's HDR Mask window)"))
 
@@ -1344,6 +1345,7 @@ _register(Tool(
         Param("boost_factor", "float", 5.0, "Dark-structure boost.", min=0.1, max=10.0),
         Param("mask_gamma", "float", 1.0, "Gamma on the darkness mask.", min=0.1, max=10.0),
         Param("iterations", "int", 2, "Enhancement passes.", min=1, max=10),
+        Param("amount", "float", 1.0, "Mix with the original (1 = full effect).", min=0.0, max=1.0),
     ], aliases=["dark_enhance", "wavescale_de", "wavescalede", "dse", "wavescaledarkenhance"],
     mask="the darkness mask the enhancement used (the app's mask window; with several "
          "iterations, the last pass's)"))

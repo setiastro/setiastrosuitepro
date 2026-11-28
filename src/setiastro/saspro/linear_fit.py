@@ -338,7 +338,6 @@ class LinearFitDialog(QDialog):
         drag_row.addStretch(1)
         self.btn_help = make_help_button("linear_fit", self)
         drag_row.addWidget(self.btn_help)
-        v.addLayout(drag_row)
 
         # Buttons
         btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel, parent=self)
@@ -348,6 +347,7 @@ class LinearFitDialog(QDialog):
         btn_reset.clicked.connect(self._reset_to_factory)
         btns.addButton(btn_reset, QDialogButtonBox.ButtonRole.ResetRole)
         v.addWidget(btns)
+        v.addLayout(drag_row)      # grip + help: the last row
         # Factory defaults for Reset; the mono reference view is left alone.
         self._factory = snapshot_controls(self, exclude=(getattr(self, "combo_ref", None),))
 

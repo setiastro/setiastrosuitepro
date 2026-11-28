@@ -310,7 +310,7 @@ def _clean_action_text(text: str) -> str:
     """A tool's menu text as a name: no mnemonic, no trailing "..."."""
     if not text:
         return ""
-    text = text.replace("&", "").strip()
+    text = text.replace("&&", "\0").replace("&", "").replace("\0", "&").strip()   # "&&" is a literal &
     for dots in ("...", "…"):
         text = text.removesuffix(dots).rstrip()
     return text
@@ -1931,9 +1931,6 @@ class WorkflowDialog(_WorkflowGraphHost, QDialog):
         top.addWidget(self._make_view_switch())
         top.addSpacing(12)
         top.addWidget(self.btn_run_mini)
-        from setiastro.saspro.shortcuts import ShortcutGrip
-        top.addWidget(ShortcutGrip("workflows", self))
-        top.addWidget(make_help_button("workflow_assistant", self))
         root.addLayout(top)
 
         self.main_split = QSplitter(Qt.Orientation.Horizontal, self)
@@ -2072,6 +2069,15 @@ class WorkflowDialog(_WorkflowGraphHost, QDialog):
             self.main_split.setStretchFactor(i, stretch)
         self.main_split.setCollapsible(1, False)
         self.main_split.setSizes([230, 1080, 290])
+
+        # Grip + help: their own row along the bottom (grip at the lower left)
+        from setiastro.saspro.shortcuts import ShortcutGrip
+        grip_row = QHBoxLayout()
+        grip_row.setContentsMargins(0, 0, 0, 0)
+        grip_row.addWidget(ShortcutGrip("workflows", self))
+        grip_row.addStretch(1)
+        grip_row.addWidget(make_help_button("workflow_assistant", self))
+        root.addLayout(grip_row)
 
         self._no_default_buttons()
         self._restore_view_mode()

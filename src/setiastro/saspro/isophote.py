@@ -543,9 +543,6 @@ class IsophoteModelerDialog(QDialog):
         reset_btn = make_reset_button(self)
         reset_btn.clicked.connect(self._reset_to_factory)
         _rl.addWidget(reset_btn)
-        from setiastro.saspro.shortcuts import ShortcutGrip
-        _rl.addWidget(ShortcutGrip("isophote", self))
-        _rl.addWidget(make_help_button("glimr", self))
         form.addRow(run_row)
 
         self.save_resid_shifted = QCheckBox(self.tr("Shift residuals to ≥ 0 on save"))
@@ -561,7 +558,17 @@ class IsophoteModelerDialog(QDialog):
         split.addWidget(self.left); split.addWidget(self.right)
         split.setSizes([700, 700])
 
-        root = QHBoxLayout(self); root.addWidget(split, 4); root.addWidget(ctl, 0)
+        body = QHBoxLayout(); body.addWidget(split, 4); body.addWidget(ctl, 0)
+        root = QVBoxLayout(self)
+        root.addLayout(body, 1)
+        # Grip + help: their own row along the bottom (grip at the lower left)
+        from setiastro.saspro.shortcuts import ShortcutGrip
+        grip_row = QHBoxLayout()
+        grip_row.setContentsMargins(0, 0, 0, 0)
+        grip_row.addWidget(ShortcutGrip("isophote", self))
+        grip_row.addStretch(1)
+        grip_row.addWidget(make_help_button("glimr", self))
+        root.addLayout(grip_row)
 
         # connections
         pick_center_btn.clicked.connect(lambda: QMessageBox.information(

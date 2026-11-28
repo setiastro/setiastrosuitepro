@@ -705,6 +705,11 @@ class NBExtractDialog(SFCCDialog):
 
     # ── UI injection ──────────────────────────────────────────────────────────
 
+    def _build_ui(self):
+        # SFCC's own window is one-click now; NBExtract keeps the two-step
+        # layout it hides SFCC's controls in and adds its own to.
+        self._build_steps_ui()
+
     def _inject_nb_ui(self):
         _sfcc_only = [
             "r_filter_combo", "g_filter_combo", "b_filter_combo",
@@ -1052,11 +1057,16 @@ class NBExtractDialog(SFCCDialog):
             return
         layout, idx = found
 
-        # Create the NB help button and insert it just after the Reset button
-        self.btn_help = make_help_button("nbextract", self)
-        layout.insertWidget(idx + 1, self.btn_help)
+        # Grip + NB help: their own row just under the Reset button (SFCC's own
+        # grip row below it is hidden), grip at the left, help at the right
         from setiastro.saspro.shortcuts import ShortcutGrip
-        layout.insertWidget(idx + 1, ShortcutGrip("nbextract", self))   # just before the help button
+        self.btn_help = make_help_button("nbextract", self)
+        grip_row = QHBoxLayout()
+        grip_row.setContentsMargins(0, 0, 0, 0)
+        grip_row.addWidget(ShortcutGrip("nbextract", self))
+        grip_row.addStretch(1)
+        grip_row.addWidget(self.btn_help)
+        layout.insertLayout(idx + 1, grip_row)
 
     def _hide_sfcc_filter_labels(self):
         layout = self.layout()
@@ -1931,6 +1941,7 @@ class NBExtractDialog(SFCCDialog):
                 img_float,
                 threshold=sep_sigma,
                 autostretch=False,
+                with_overlay=False,      # the overlay is discarded here
                 reuse_cached_sources=False,
                 return_star_colors=False,
                 use_color_matrix=True,

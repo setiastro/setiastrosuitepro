@@ -1754,6 +1754,28 @@ def _flip_vertical_wcs_header(hdr, naxis2):
     return h
 
 
+# The ROWORDER comment _apply_roworder_flip writes. It records that the file on
+# disk was BOTTOM-UP, so a document save can write it back that way.
+_ROWORDER_FLIPPED_COMMENT = "Reoriented to top-down by SASpro on load"
+
+
+def header_loaded_bottom_up(hdr) -> bool:
+    """True when load_image flipped this header's file from BOTTOM-UP.
+
+    Siril opens a TOP-DOWN FITS upside down, so a Siril file SASpro saved
+    top-down came back flipped there. DocManager.save_document uses this to
+    write such a file back BOTTOM-UP, the way it came.
+    """
+    if not isinstance(hdr, fits.Header):
+        return False
+    try:
+        if str(hdr.get("ROWORDER", "")).strip().upper() != "TOP-DOWN":
+            return False
+        return str(hdr.comments["ROWORDER"]).strip() == _ROWORDER_FLIPPED_COMMENT
+    except Exception:
+        return False
+
+
 def _apply_roworder_flip(image, header):
     """
     SASpro works internally top-down (row 0 = top of frame). FITS tagged
@@ -1799,7 +1821,7 @@ def _apply_roworder_flip(image, header):
     if header is not None:
         header = _flip_vertical_wcs_header(header, naxis2)
         try:  # retag so a re-save + reload doesn't double-flip
-            header["ROWORDER"] = ("TOP-DOWN", "Reoriented to top-down by SASpro on load")
+            header["ROWORDER"] = ("TOP-DOWN", _ROWORDER_FLIPPED_COMMENT)
             header.add_history("SASpro: flipped BOTTOM-UP->TOP-DOWN on load; WCS updated")
         except Exception:
             pass
@@ -2426,6 +2448,12 @@ def load_image(filename, max_retries=3, wait_seconds=3, return_metadata: bool = 
                         "bit_depth": bit_depth,
                         "mono": is_mono,
                     }
+                    # How the file sat on disk, for saving it back the same way
+                    # (DocManager.save_document). Kept beside the ROWORDER
+                    # comment because header rebuilds drop card comments -- the
+                    # plate solver's does.
+                    if header_loaded_bottom_up(original_header):
+                        meta["source_roworder"] = "BOTTOM-UP"
                     meta = attach_wcs_to_metadata(meta, original_header)
 
                     if return_metadata:
@@ -4746,12 +4774,17 @@ def save_image(img_array,
                file_meta=None,
                wcs_header=None, 
                jpeg_quality: int | None = None,
-               export_opts: dict | None = None):  
+               export_opts: dict | None = None,
+               fits_bottom_up: bool = False):
     """
     Save an image array to a file in the specified format and bit depth.
     - Robust to mis-ordered positional args (header/bit_depth swap).
     - Never calls .keys() on a non-mapping.
     - FITS always written as float32; header is sanitized or synthesized.
+    - "fz" writes tile-compressed FITS: RICE_1 for integer depths, lossless
+      GZIP_2 for 32-bit float.
+    - fits_bottom_up: write FITS rows BOTTOM-UP (rows and WCS flipped,
+      ROWORDER='BOTTOM-UP'). The array itself is top-down, as always.
     """
     # 🔊 Debug what we got
     export_opts = dict(export_opts or {})
@@ -5015,7 +5048,7 @@ def save_image(img_array,
         # ---------------------------------------------------------------------
         # ".fts" is advertised by the Save As FITS filter, so it has to be
         # writable here too -- it used to raise "Unsupported file format".
-        if fmt in ("fit", "fits", "fts"):
+        if fmt in ("fit", "fits", "fts", "fz"):
             # Helper to build minimal valid header
             def _minimal_fits_header(h: int, w: int, is_rgb: bool) -> fits.Header:
                 hdr = fits.Header()
@@ -5160,6 +5193,14 @@ def save_image(img_array,
                 fits_header["NAXIS2"] = h
                 fits_header.pop("NAXIS3", None)
 
+            # Written the way the source file was stored (the caller decides,
+            # see DocManager.save_document). The WCS flips with the rows so it
+            # still describes the pixels.
+            if fits_bottom_up:
+                base_data = np.ascontiguousarray(np.flip(base_data, axis=-2))
+                fits_header = _flip_vertical_wcs_header(fits_header, h)
+                fits_header["ROWORDER"] = ("BOTTOM-UP", "Stored bottom-up like its source file")
+
             bd = (bit_depth or "32-bit floating point").lower()
 
             if bd == "8-bit":
@@ -5187,11 +5228,34 @@ def save_image(img_array,
 
             _wcs_pc_to_cd(fits_header)        # PixInsight reads CD, never PC
 
+            def _image_hdu(data, header):
+                if fmt != "fz":
+                    return fits.PrimaryHDU(data, header=header)
+                # Tile-compressed image extension behind an empty primary, as
+                # fpack and Siril write it. Rice is lossless on integers but
+                # can only code floats by quantizing them (and with
+                # quantization off, astropy silently corrupts them), so
+                # 32-bit float uses lossless GZIP_2 instead.
+                header = header.copy()
+                for k in ("SIMPLE", "EXTEND"):
+                    header.remove(k, ignore_missing=True)
+                if np.asarray(data).dtype.kind == "f":
+                    return fits.CompImageHDU(data, header=header,
+                                             compression_type="GZIP_2",
+                                             quantize_level=0.0)
+                return fits.CompImageHDU(data, header=header, compression_type="RICE_1")
+
+            def _write(img_hdu):
+                if fmt == "fz":
+                    fits.HDUList([fits.PrimaryHDU(), img_hdu]).writeto(filename, overwrite=True)
+                else:
+                    img_hdu.writeto(filename, overwrite=True)
+
             # --- Write with the same robust path you already had ---
-            hdu = fits.PrimaryHDU(data_to_write, header=fits_header)
+            hdu = _image_hdu(data_to_write, fits_header)
 
             try:
-                hdu.writeto(filename, overwrite=True)
+                _write(hdu)
             except VerifyError as ve:
                 print(f"FITS header verify error while saving {filename}: {ve}")
                 print("Attempting header auto-fix via hdu.verify('fix') and manual cleanup...")
@@ -5214,15 +5278,17 @@ def save_image(img_array,
                         pass
 
                 try:
-                    hdu.writeto(filename, overwrite=True)
+                    _write(hdu)
                 except VerifyError as ve3:
                     print(f"Still failing after cleanup: {ve3}")
                     print("Falling back to minimal FITS header (dropping all original cards).")
                     clean_header = _minimal_fits_header(h, w, is_rgb)
-                    hdu2 = fits.PrimaryHDU(data_to_write.astype(np.float32), header=clean_header)
-                    hdu2.writeto(filename, overwrite=True)
+                    if fits_bottom_up:
+                        clean_header["ROWORDER"] = "BOTTOM-UP"   # the rows already are
+                    _write(_image_hdu(data_to_write.astype(np.float32), clean_header))
 
-            print(f"Saved FITS image to: {filename}")
+            print(f"Saved {'compressed ' if fmt == 'fz' else ''}FITS image to: {filename}"
+                  f"{' (BOTTOM-UP)' if fits_bottom_up else ''}")
             return
         # ---------------------------------------------------------------------
         # RAW inputs — not writable; convert to FITS (float32)

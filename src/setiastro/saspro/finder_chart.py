@@ -1662,7 +1662,6 @@ class FinderChartFromCoordDialog(_SkyChartHostMixin, QDialog):
         row1.addWidget(self.sb_px)
 
         row1.addStretch(1)
-        row1.addWidget(make_help_button("finder_chart", self))
         self.btn_render = QPushButton(self.tr("Render"))
         row1.addWidget(self.btn_render)
         root.addLayout(row1)
@@ -1813,6 +1812,12 @@ class FinderChartFromCoordDialog(_SkyChartHostMixin, QDialog):
         self.lbl.setText(self.tr("Fetching survey background…"))
         self.lbl.setStyleSheet("QLabel { background:#111; border:1px solid #333; color:#ccc; }")
         self._install_sky_chart_host()
+        # Help: its own row at the bottom right, under either style's page
+        help_row = QHBoxLayout()
+        help_row.setContentsMargins(0, 0, 0, 0)
+        help_row.addStretch(1)
+        help_row.addWidget(make_help_button("finder_chart", self))
+        self.layout().addLayout(help_row)
         QTimer.singleShot(0, lambda: self._render_now(force_refetch=True))
 
     def _seed_sky_panel(self):
@@ -2160,9 +2165,6 @@ class FinderChartDialog(_SkyChartHostMixin, QDialog):
         self.lbl_opacity.setFixedWidth(40)
         row1.addWidget(self.lbl_opacity)
         row1.addStretch(1)
-        from setiastro.saspro.shortcuts import ShortcutGrip
-        row1.addWidget(ShortcutGrip("finder_chart", self))
-        row1.addWidget(make_help_button("finder_chart", self))
         self.btn_render = QPushButton(self.tr("Render"))
         row1.addWidget(self.btn_render)
 
@@ -2299,6 +2301,14 @@ class FinderChartDialog(_SkyChartHostMixin, QDialog):
         self._set_overlay_controls_enabled()
         self._factory = snapshot_controls(self._survey_page)     # before the saved overlay state
         self._install_sky_chart_host()
+        # Grip + help: their own row at the bottom, under either style's page
+        from setiastro.saspro.shortcuts import ShortcutGrip
+        grip_row = QHBoxLayout()
+        grip_row.setContentsMargins(0, 0, 0, 0)
+        grip_row.addWidget(ShortcutGrip("finder_chart", self))
+        grip_row.addStretch(1)
+        grip_row.addWidget(make_help_button("finder_chart", self))
+        self.layout().addLayout(grip_row)
         # kick initial render AFTER the dialog has had a chance to show/paint
         QTimer.singleShot(0, self._initial_render)
 

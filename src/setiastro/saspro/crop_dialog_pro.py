@@ -2402,6 +2402,12 @@ class CropDialogPro(QDialog):
                 new_meta = update_wcs_after_crop(new_meta, M_src_to_dst=M, out_w=w_out, out_h=h_out)
         except Exception:
             pass
+        try:    # a Lunar Solver placement moves with the pixels
+            from setiastro.saspro.lunar_solver import lunar_solution_after_geometry
+            new_meta = lunar_solution_after_geometry(new_meta, M, (h_out, w_out),
+                                                     in_shape=np.asarray(self.doc.image).shape[:2])
+        except Exception:
+            pass
 
         CropDialogPro._prev_rect  = QRectF(self._rect_item.rect())
         CropDialogPro._prev_angle = float(self._rect_item.rotation())
@@ -2532,6 +2538,12 @@ class CropDialogPro(QDialog):
             try:
                 if update_wcs_after_crop is not None:
                     meta_this = update_wcs_after_crop(meta_this, M_src_to_dst=M, out_w=w_out, out_h=h_out)
+            except Exception:
+                pass
+            try:    # a Lunar Solver placement moves with the pixels
+                from setiastro.saspro.lunar_solver import lunar_solution_after_geometry
+                meta_this = lunar_solution_after_geometry(meta_this, M, (h_out, w_out),
+                                                          in_shape=np.asarray(d.image).shape[:2])
             except Exception:
                 pass
             try:

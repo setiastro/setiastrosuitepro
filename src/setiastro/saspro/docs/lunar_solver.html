@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  body { background:#1b1b1b; color:#dcdcdc; font-family:"Segoe UI",sans-serif;
+         font-size:13px; line-height:1.55; margin:18px; }
+  h1 { color:#3dbf9f; font-size:21px; margin:0 0 4px 0; }
+  h2 { color:#3dbf9f; font-size:16px; margin:22px 0 6px 0;
+       border-bottom:1px solid #333; padding-bottom:3px; }
+  h3 { color:#8fd7c6; font-size:14px; margin:14px 0 4px 0; }
+  h4 { color:#b8e3d4; font-size:13px; margin:10px 0 3px 0; }
+  p, li, td, th { color:#dcdcdc; }
+  b, strong { color:#ffffff; }
+  code { background:#2a2a2a; color:#9fe0cf; padding:1px 4px; border-radius:3px;
+         font-family:Consolas,"DejaVu Sans Mono",monospace; }
+  .eq { background:#141414; border:1px solid #333; border-left:3px solid #3dbf9f;
+        padding:9px 13px; margin:9px 0; color:#e6e6e6;
+        font-family:Consolas,"DejaVu Sans Mono",monospace; font-size:13px;
+        white-space:pre-wrap; }
+  .hero { background:#15211e; border:1px solid #2c5a4e; border-left:3px solid #3dbf9f;
+          padding:11px 14px; margin:10px 0; }
+  .eqimg { margin:2px 0; }
+  ul { margin:4px 0; } li { margin:3px 0; }
+  table { border-collapse:collapse; margin:8px 0; }
+  th, td { border:1px solid #333; padding:5px 10px; text-align:left; vertical-align:top; }
+  th { background:#262626; color:#3dbf9f; }
+  .sub { color:#9a9a9a; font-size:12px; margin-top:0; }
+  .tech-lead { color:#9a9a9a; font-size:12px; font-style:italic; margin:4px 0 0 0; }
+  .tip { background:#20302c; border-left:3px solid #3dbf9f; padding:8px 12px;
+         margin:10px 0; color:#cfe8e0; }
+  .warn { background:#302820; border-left:3px solid #d4a037; padding:8px 12px;
+          margin:10px 0; color:#e8d9b8; }
+  .credit { background:#241f15; border:1px solid #5a4a2c; border-left:3px solid #d4af37;
+            padding:8px 12px; margin:10px 0; color:#e8dcc0; }
+  .pub { background:#1a2a1f; border-left:3px solid #4ea067; padding:9px 13px;
+         margin:10px 0; color:#c9e3ce; }
+  .keys { background:#1a222e; border:1px solid #2c4a6a; border-left:3px solid #4a9ad4;
+          padding:8px 12px; margin:10px 0; color:#cde0f0; }
+  .workflow { background:#17202a; border:1px solid #2c4860; border-left:3px solid #4aa0d4;
+              padding:8px 12px; margin:10px 0; color:#cde3f0; }
+  .cap { color:#9a9a9a; font-size:11px; }
+  .toc { background:#1a1a1a; border:1px solid #333; padding:10px 14px; margin:10px 0;
+         font-size:12px; column-count:2; column-gap:28px; }
+  .toc a { color:#8fd7c6; text-decoration:none; }
+  .toc a:hover { color:#3dbf9f; text-decoration:underline; }
+</style>
+</head>
+<body>
+
+<h1>Lunar Solver</h1>
+<p class="sub">Finds where a lunar image sits on the Moon: which part of the surface it shows, its scale, its orientation and whether it is mirrored. It then labels the craters, maria and mountains in view and shows lunar latitude and longitude under the cursor. It works on full discs, on close-ups with no limb in the frame, and on images with no capture date.</p>
+
+<div class="pub">
+<b>Original work for SetiAstro Suite Pro</b> by <b>Franklin Marek</b>. A star plate solve matches an image against a star catalogue. The Moon has no catalogue to match, so the Lunar Solver predicts what the Moon looked like at the capture time and matches the image against that prediction. The prediction is rendered from NASA's laser-altimeter terrain, with real shading and cast shadows, and the Moon's measured surface brightness.
+</div>
+
+<div class="workflow"><b>Workflow</b><br>
+<b>Open</b> a lunar image (stacked, sharpened or not) and make it the active view. <b>Open Lunar Solver</b> from Analysis &rarr; Astrometry. <b>Check the capture time</b>: it is read from the image if possible. <b>Solve</b>. The labels appear on the preview, the solution is stored with the image, and <b>Create Annotated Image</b> opens a labelled copy as a new view.
+</div>
+
+<h2>Capture time</h2>
+<p>The capture time sets the libration (which edge of the Moon is tipped toward us) and where the Sun is. It is read, in this order, from:</p>
+<ul>
+<li>the <code>DATE-OBS</code> (or <code>DATE-BEG</code>) FITS keyword, which is UTC;</li>
+<li>a WinJUPOS-style file name such as <code>2023-05-01-0129_8</code>, which is UTC;</li>
+<li>a SharpCap capture folder and file name such as <code>2023-05-01/Moon/20_29_48_...</code>. SharpCap names these in <b>local time</b>, so the time is converted with this computer's time zone;</li>
+<li>the camera's EXIF capture time (<code>DateTimeOriginal</code>). EXIF's plain modification time is deliberately ignored, because it records when the file was last processed, not when it was captured.</li>
+</ul>
+<p>The time box is always in <b>UTC</b>. An hour or two of error barely matters: the Sun moves about half a degree per hour on the Moon.</p>
+<div class="tip"><b>No date?</b> Check <b>Date unknown</b>. The solver then needs no Sun angle at all. After band-pass filtering, a photo of the Moon is a mix of three fixed maps (the albedo times each component of the surface's tilt), and the mix itself is the Sun's direction. With a limb in frame, every rotation, both mirror states and a grid of librations are compared around the limb at once; otherwise surface features suggest placements. Each candidate is scored by how much of the photo the three maps explain, and the libration and Sun angle come out of the winning fit. The result reports the libration, the Sun's colongitude and the phase. The colongitude is measured well when the field shows the terminator; otherwise it is marked approximate. The very first blind solve also builds a search index (about 15&nbsp;MB, kept with the reference maps), which adds about half a minute once.</div>
+
+<h2>Observing site</h2>
+<p>The Moon is close enough that where you stand on Earth shifts its libration by up to about 1&deg;. The site is taken from What's In My Sky the first time and can be edited here; longitude is east-positive. Without a site the Earth's centre is used, and the fit corrects the libration when the image shows that it is off (most visibly near the limb).</p>
+
+<h2>Image scale</h2>
+<p>Fields smaller than about 200&nbsp;km hold too few surface features for the feature search to find them. With the image's scale known (arcseconds per pixel), the solver instead tries every rotation and both mirror states at every position on the near side and keeps the placement the Sun-free maps explain best. The scale is read from the image's FITS header when it has one (a WCS, a pixel-scale keyword, or the pixel size and focal length), otherwise it is taken from your last solve: uncheck <b>Image scale</b> if this image came from a different telescope or camera. The scale is only used when the ordinary search fails, so a wrong value costs time, never a wrong answer. This search takes about half a minute. Fields under about 140&nbsp;km are too small even for it and are not searched this way.</p>
+
+<h2>How it solves</h2>
+<ul>
+<li><b>Full disc</b> (the limb's centre is inside the frame): the lit limb is fitted with a circle, ignoring the terminator. Rotation and mirroring are then found by correlating the image with the predicted Moon around that circle.</li>
+<li><b>Close-up</b>: the image is located on the predicted Moon by feature matching, trying both mirror states and several scales.</li>
+<li><b>No date</b>: candidate placements come from the limb (rotation, mirror and libration searched together by Fourier transforms) and from surface features. Each is scored by the fraction of the photo the three Sun-free maps explain, then polished in position, rotation, scale and libration.</li>
+<li><b>Refinement</b> (always): hundreds to thousands of small patches are matched against the prediction. A perspective model of the Moon, including LOLA terrain heights, is then fitted to them. The model's parameters are the disc centre, radius, rotation, mirror and a libration correction.</li>
+</ul>
+<p>A result is accepted only when it clearly beats the mirrored and next-best placements, uses at least 40 surface matches, and fits tightly. An undated result must also explain at least 20&nbsp;% of the photo, and two and a half times more than any other placement. Otherwise the solver says it failed and changes nothing. It never returns a placement it isn't sure of.</p>
+
+<h2>Results</h2>
+<table>
+<tr><th>Field</th><th>Meaning</th></tr>
+<tr><td>Fit</td><td>Number of surface matches and their RMS residual in pixels. Under about 1&nbsp;px is typical.</td></tr>
+<tr><td>Confidence</td><td>How much of the band-passed photo the Moon's albedo and slope maps explain at this placement, under the best-fitting Sun. 50&ndash;90&nbsp;% is typical for a sharp image. After an undated solve, the runner-up is the best other placement the search found, usually a few percent.</td></tr>
+<tr><td>Scale</td><td>Arcseconds per pixel (dated solves) and kilometres per pixel at the centre of the disc.</td></tr>
+<tr><td>Lunar north</td><td>Direction of the Moon's north pole in the image, clockwise from up.</td></tr>
+<tr><td>Mirrored</td><td>Yes when the image is a mirror image of the sky, for example from a star diagonal.</td></tr>
+<tr><td>Libration</td><td>The point on the Moon directly facing you (sub-Earth point).</td></tr>
+<tr><td>Sun</td><td>Colongitude and the sub-solar point. After a blind solve of a field far from the terminator it is marked approximate.</td></tr>
+<tr><td>Phase</td><td>Waxing or waning, crescent, quarter or gibbous, the fraction of the disc lit, and the phase angle (Sun&ndash;Moon&ndash;observer).</td></tr>
+<tr><td>Frame centre</td><td>Selenographic latitude and longitude at the centre of the image.</td></tr>
+</table>
+<p>The solution is stored with the image as <code>LUN*</code> header keywords (centre, radius, rotation, mirror, observer distance, the body-to-sky matrix and the Sun vector). Saving keeps them: in the header of a FITS file, and in the metadata SASpro embeds in TIFF, PNG, JPEG and XISF files, so reopening the file brings the solution back (WebP files keep no metadata). Other tools, such as 3D Projection's lunar relief, reuse it without solving again. SASpro's own geometry tools carry it along: flips, 90&deg; and free rotations, rescaling, canvas resizing and crops (rotated ones too) move the solution with the pixels, and Undo restores the old one. A keystone (perspective) crop cannot be followed and removes it; so does resizing the image in another program. Solve again after either.</p>
+
+<h2>Labels and coordinates</h2>
+<p>Names come from the IAU's approved lunar nomenclature: 1,615 named craters, the maria, mountains, valleys and rilles, and 7,064 lettered craters such as Copernicus&nbsp;A. Crater rims are drawn as they really appear, foreshortened toward the limb. <b>Smallest feature</b> sets how wide a feature must be in the image to get a label. Rilles, ridges and crater chains are off by default, because their listed size is their length and they crowd a full-disc view. Lettered craters and features on the unlit side are off by default too. The preview also skips craters smaller than about 9 screen pixels, and any label that would overlap a bigger feature's label. The annotated image also skips overlapping labels, but has no screen-size limit beyond <b>Smallest feature</b>. Move the mouse over the preview to read latitude, longitude and the name of the feature under the cursor.</p>
+<p><b>Spacecraft landing sites</b> are marked with a pink target and the mission's name and year: the Apollo, Surveyor, Luna and Lunokhod, Chang'e, Chandrayaan-3, SLIM, Intuitive Machines and Blue Ghost landers. Hover over one for the country and kind of mission. Positions are measured from Lunar Reconnaissance Orbiter images, to within tens of metres, except Luna&nbsp;9 and Luna&nbsp;13, which have never been found from orbit: theirs are the positions announced at the time and may be tens of kilometres off.</p>
+
+<h2>Reference data</h2>
+<p>On first use the solver downloads about 50&nbsp;MB once:</p>
+<ul>
+<li>the <b>LOLA LDEM_16</b> global terrain model (NASA LRO Lunar Orbiter Laser Altimeter, PDS Geosciences Node), 16 pixels per degree, about 1.9&nbsp;km per pixel;</li>
+<li>the <b>Clementine UVVIS 750&nbsp;nm</b> albedo mosaic (USGS Astrogeology map server), same resolution.</li>
+</ul>
+<p>The IAU feature names ship with SASpro (USGS Gazetteer of Planetary Nomenclature).</p>
+<p><b>Detailed maps.</b> A small, sharp field (finer than about 1.2&nbsp;km per pixel) that cannot be confirmed on the 1.9&nbsp;km maps is matched again on maps of its own area at 64 pixels per degree, about 0.47&nbsp;km per pixel: <b>LOLA LDEM_64</b> terrain and the same Clementine albedo. Each area is downloaded the first time a solve needs it (about 12&nbsp;MB for a 4&deg; band of latitude) and kept, so nothing is fetched twice. To solve small fields without an internet connection, for example at a dark site, press <b>Download for Offline Use</b> in the <b>Detailed maps</b> box at the bottom right while you are online: it fetches the whole near side, about 690&nbsp;MB. Cancel at any time; what has been downloaded is kept and the button continues from there.</p>
+<div class="warn"><b>Limits.</b> The everyday reference maps resolve about 2&nbsp;km and the detailed maps about 0.5&nbsp;km. Very small, very high-magnification fields with little structure may not solve, and neither may a stretch of featureless mare. Earthshine-lit night sides are not modelled.</div>
+
+<h2>Credits</h2>
+<div class="credit">
+<b>Lunar Solver</b> is original SASpro work by <b>Franklin Marek</b>: the ephemeris-driven reference renderer (LOLA relief, Clementine albedo, lunar-Lambert shading and cast shadows), the perspective Moon model with terrain heights and libration correction, the limb, feature and patch matching, the lighting-independent search for undated images, and the IAU label overlay. It builds on published work:
+<br><br>
+<b>Shading under unknown lighting:</b>
+<ul>
+<li><b>Every lighting is a mix of three maps</b> &mdash; Shashua, A. (1997). &ldquo;On photometric issues in 3D visual recognition from a single 2D image.&rdquo; <i>International Journal of Computer Vision</i> 21(1&ndash;2), 99&ndash;122. Without shadows, any image of a matte surface is a linear combination of its albedo-scaled surface-normal components. The undated search scores placements with that combination, and the fitted combination is the Sun's direction.</li>
+<li>Belhumeur, P. N. &amp; Kriegman, D. J. (1998). &ldquo;What is the set of images of an object under all possible illumination conditions?&rdquo; <i>International Journal of Computer Vision</i> 28(3), 245&ndash;260.</li>
+<li>Woodham, R. J. (1980). &ldquo;Photometric method for determining surface orientation from multiple images.&rdquo; <i>Optical Engineering</i> 19(1), 139&ndash;144 (photometric stereo).</li>
+</ul>
+<b>Lunar photometry:</b>
+<ul>
+<li><b>Lunar-Lambert function</b> &mdash; McEwen, A. S. (1991). &ldquo;Photometric functions for photoclinometry and other applications.&rdquo; <i>Icarus</i> 92(2), 298&ndash;311. Used to shade the reference renders.</li>
+</ul>
+<b>Data:</b>
+<ul>
+<li>NASA LRO Lunar Orbiter Laser Altimeter, LDEM_16 and LDEM_64 global terrain models (PDS Geosciences Node).</li>
+<li>Clementine UVVIS 750&nbsp;nm albedo mosaic (USGS Astrogeology), at 16 and 64 pixels per degree.</li>
+<li>IAU Gazetteer of Planetary Nomenclature (IAU WGPSN / USGS).</li>
+<li><b>Landing sites</b> &mdash; Wagner, R. V. et al. (2017). &ldquo;Coordinates of anthropogenic features on the Moon.&rdquo; <i>Icarus</i> 283, 92&ndash;103, and later Lunar Reconnaissance Orbiter Camera (LROC) releases for Chang'e&nbsp;4, 5 and 6, Chandrayaan-3, SLIM, IM-1, IM-2 and Blue Ghost. Luna&nbsp;9 and Luna&nbsp;13: positions as announced (NASA NSSDCA).</li>
+</ul>
+</div>
+
+</body>
+</html>

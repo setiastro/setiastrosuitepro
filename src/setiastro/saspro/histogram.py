@@ -206,11 +206,6 @@ class HistogramDialog(QDialog):
         self.btn_sensor_max.clicked.connect(self._prompt_sensor_max)
         ctl.addWidget(self.btn_sensor_max)
 
-        # in-app documentation button, trailing the control row (far right)
-        self.btn_help = make_help_button("histogram", self)
-        from setiastro.saspro.shortcuts import ShortcutGrip
-        ctl.addWidget(ShortcutGrip("histogram", self))
-        ctl.addWidget(self.btn_help)
 
         main_layout.addLayout(ctl)
 
@@ -222,6 +217,15 @@ class HistogramDialog(QDialog):
         close_row.addWidget(btn_reset)
         close_row.addWidget(btn_close, 1)
         main_layout.addLayout(close_row)
+        # Grip + help: their own row at the bottom
+        from setiastro.saspro.shortcuts import ShortcutGrip
+        self.btn_help = make_help_button("histogram", self)
+        grip_row = QHBoxLayout()
+        grip_row.setContentsMargins(0, 0, 0, 0)
+        grip_row.addWidget(ShortcutGrip("histogram", self))
+        grip_row.addStretch(1)
+        grip_row.addWidget(self.btn_help)
+        main_layout.addLayout(grip_row)
 
         self.setLayout(main_layout)
         # Factory display options (zoom, log X/Y). The sensor true-max is a

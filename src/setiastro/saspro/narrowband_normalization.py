@@ -157,8 +157,11 @@ class NarrowbandNormalization(QWidget):
         # columns rather than the panel just being as wide as it needs to be.
         left_host = QWidget(self)
 
-        left_row = QHBoxLayout(left_host)
+        left_v = QVBoxLayout(left_host)
+        left_v.setContentsMargins(0, 0, 0, 0)
+        left_row = QHBoxLayout()
         left_row.setContentsMargins(0, 0, 0, 0)
+        left_v.addLayout(left_row, 1)
         left_row.setSpacing(10)
 
         colA = QVBoxLayout(); colA.setSpacing(8)
@@ -209,6 +212,15 @@ class NarrowbandNormalization(QWidget):
 
         left_row.addLayout(colA, 1)
         left_row.addLayout(colB, 1)
+        # Grip + help: their own row under both control columns
+        from setiastro.saspro.shortcuts import ShortcutGrip
+        self.btn_doc_help = make_help_button("nb_normalization", self)
+        grip_row = QHBoxLayout()
+        grip_row.setContentsMargins(0, 0, 0, 0)
+        grip_row.addWidget(ShortcutGrip("narrowband_normalization", self))
+        grip_row.addStretch(1)
+        grip_row.addWidget(self.btn_doc_help)
+        left_v.addLayout(grip_row)
 
         # Minimum horizontally so the columns can't be squeezed below their
         # content; the preview takes all remaining width.
@@ -236,10 +248,6 @@ class NarrowbandNormalization(QWidget):
         tools.addWidget(self.btn_zoom_in)
         tools.addWidget(self.btn_fit)
         tools.addStretch(1)
-        self.btn_doc_help = make_help_button("nb_normalization", self)
-        from setiastro.saspro.shortcuts import ShortcutGrip
-        tools.addWidget(ShortcutGrip("narrowband_normalization", self))
-        tools.addWidget(self.btn_doc_help)
         right.addLayout(tools)
 
         self.scroll = QScrollArea(self)

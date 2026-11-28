@@ -1091,11 +1091,16 @@ class SignatureInsertDialogPro(QDialog):
         add_sec("position", self.tr("Send to Position"), self.grp_position, False)
         add_sec("zoom", self.tr("Zoom"), self.grp_zoom, False)
         add_sec("apply", self.tr("Apply / Clear"), self.grp_apply, True)
-        self.btn_doc_help = make_help_button("signature_insert", self)
-        from setiastro.saspro.shortcuts import ShortcutGrip
-        col.addWidget(ShortcutGrip("signature_insert", self))
-        col.addWidget(self.btn_doc_help)
         col.addStretch(1)
+        # Grip + help: their own row at the bottom of the controls column
+        from setiastro.saspro.shortcuts import ShortcutGrip
+        self.btn_doc_help = make_help_button("signature_insert", self)
+        grip_row = QHBoxLayout()
+        grip_row.setContentsMargins(0, 0, 0, 0)
+        grip_row.addWidget(ShortcutGrip("signature_insert", self))
+        grip_row.addStretch(1)
+        grip_row.addWidget(self.btn_doc_help)
+        col.addLayout(grip_row)
 
         left = QWidget()
         left.setLayout(col)

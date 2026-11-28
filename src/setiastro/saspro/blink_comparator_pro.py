@@ -3093,6 +3093,16 @@ class BlinkTab(QWidget):
         # Add loading message label
         self.loading_label = QLabel(self.tr("Loading images..."), self)
         left_layout.addWidget(self.loading_label)
+
+        # Grip + help: their own row at the bottom of the left column
+        from setiastro.saspro.shortcuts import ShortcutGrip
+        self.btn_doc_help = make_help_button("blink", self)
+        grip_row = QHBoxLayout()
+        grip_row.setContentsMargins(0, 0, 0, 0)
+        grip_row.addWidget(ShortcutGrip("blink", self))
+        grip_row.addStretch(1)
+        grip_row.addWidget(self.btn_doc_help)
+        left_layout.addLayout(grip_row)
         self.imagesChanged.emit(len(self.loaded_images)) 
 
         # Set the layout for the left widget
@@ -3143,10 +3153,6 @@ class BlinkTab(QWidget):
         self.btn_reset = make_reset_button(self)
         self.btn_reset.clicked.connect(self._reset_to_factory)
         zoom_controls_layout.addWidget(self.btn_reset)
-        self.btn_doc_help = make_help_button("blink", self)
-        from setiastro.saspro.shortcuts import ShortcutGrip
-        zoom_controls_layout.addWidget(ShortcutGrip("blink", self))
-        zoom_controls_layout.addWidget(self.btn_doc_help)
         self.scroll_area = QScrollArea(self)
         self.scroll_area.setWidgetResizable(True)
         self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)

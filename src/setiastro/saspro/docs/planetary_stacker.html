@@ -89,7 +89,7 @@
 <a href="#s14_2">14.2 Reference frame</a><br>
 <a href="#s14_3">14.3 Alignment points</a><br>
 <a href="#s14_4">14.4 Planetary centroid tracker</a><br>
-<a href="#s14_5">14.5 Surface coarse tracking</a><br>
+<a href="#s14_5">14.5 Surface coarse tracking (anchor, whole-frame search)</a><br>
 <a href="#s14_6">14.6 AP phase correlation</a><br>
 <a href="#s14_7">14.7 SSD gradient refinement</a><br>
 <a href="#s14_8">14.8 Multi-scale AP combination</a><br>
@@ -113,7 +113,7 @@
 <p>Inherits from the Viewer but can be overridden here:</p>
 <ul>
   <li><b>Planetary</b> &mdash; brightness-threshold centroid tracking (&sect;14.4). The usual pick for Jupiter, Saturn, Mars, Venus.</li>
-  <li><b>Surface</b> &mdash; anchor-patch tracking via NCC + phase correlation (&sect;14.5). The right pick for the Moon, Sun, and any object filling a large fraction of the frame. Requires a surface anchor set in the Viewer.</li>
+  <li><b>Surface</b> &mdash; finds your anchor patch anywhere in each frame, so videos that jump are followed (&sect;14.5). The right pick for the Moon, Sun, and any object filling a large fraction of the frame. Requires a surface anchor set in the Viewer. Frames where the anchor can't be found are dropped from the stack.</li>
   <li><b>Off</b> &mdash; no alignment search; frames are stacked at their native positions. Use for already-aligned data (e.g., an aligned SER exported from a previous run &mdash; &sect;11) or for diagnostic stacks.</li>
 </ul>
 
@@ -297,7 +297,13 @@
 <p>Stacking is heavily parallel: frames are warped in a thread pool whose worker count defaults to <code>min(CPU count, 48)</code>. In non-drizzle mode the warped frames are accumulated serially on the main thread with their quality weights to avoid locking overhead; in drizzle mode, deposits land into shared buffers one frame at a time (also serially, to avoid Numba GIL contention under high parallelism).</p>
 
 <h2 id="s13">13. Output</h2>
-<p>On completion, the result is pushed as a new SASpro document named <code>&lt;source-basename&gt;_stack</code> (e.g., <code>jupiter_2026_11_21_stack</code>), with full history metadata including the stacking diagnostics (frames kept vs. total, track mode, drizzle settings, worker count). The document is opened in a sub-window ready for stretch, wavelets, deconvolution, or whatever else your post-processing pipeline needs.</p>
+<p>On completion, the result is pushed as a new SASpro document, opened in a sub-window ready for stretch, wavelets, deconvolution, or whatever else your post-processing pipeline needs. It carries the stacking diagnostics (frames kept vs. total, track mode, drizzle settings, worker count) and a FITS header with everything the capture recorded, which <b>Save As</b> writes into FITS and TIFF files:</p>
+<ul>
+  <li><b>Times (UTC):</b> <code>DATE-OBS</code> / <code>DATE-END</code> are the first and last frame of the capture. <code>DATE-AVG</code> is the stack's own time: the quality-weighted mean time of the frames that were stacked (with planetary derotation, the time of the reference frame every frame was derotated to). They come from the SER per-frame timestamps, else the SER header's start time, else the file name. <code>DATE</code> is when the stack was made, not the capture.</li>
+  <li><b>Local time only:</b> some files record the capture start only on the capture computer's own clock &mdash; an AVI's <code>IDIT</code> chunk (VfW/AVICap capture programs such as K3CCDTools), or a SER whose header has no UTC date. The file doesn't say which time zone that clock was on, so it is written as <code>DATE-LOC</code> (as N.I.N.A. does), never as <code>DATE-OBS</code>, and the name gets no WinJUPOS stamp. The Lunar Solver and Lunar Relief read <code>DATE-LOC</code> and convert it with <i>this</i> computer's time zone, and say so next to the time &mdash; correct it there if the video was captured somewhere else.</li>
+  <li><b>Who and what:</b> <code>OBSERVER</code>, <code>INSTRUME</code> and <code>TELESCOP</code> from the SER header (fields filled with placeholder text such as <code>aaaa&hellip;</code> are ignored), <code>OBJECT</code> from the file or folder name (Jupiter, Saturn, Mars, Moon, Sun&hellip;), <code>NCOMBINE</code>, and HISTORY lines naming the source file and where each time came from. FITS sequences also carry their first frame's observational cards (OBJECT, FILTER, EXPTIME, GAIN, site&hellip;). AVIs carry their capture program as <code>SWCREATE</code> (from the <code>ISFT</code> chunk).</li>
+</ul>
+<p>When the capture time is known, the document is named the <b>WinJUPOS way</b>: a <code>YYYY-MM-DD-HHMM_T</code> stamp of the stack's time (UTC, <code>T</code> = tenths of a minute), followed by the rest of the source name as your capture program wrote it, then <code>_stack</code>. So <code>2020-10-06-2105_9-Mars.ser</code> stacks to <code>2020-10-06-2105_9-Mars_stack</code> when the stacked frames average to 21:05.9, and the stamp moves if the best frames came later in the capture. A source with no time at all (for example a PIPP output with an empty SER header) keeps the old <code>&lt;source-basename&gt;_stack</code> name. The log lists what was found and where it came from.</p>
 <p>The log window records the full run including every phase's elapsed time and the final kept-of-total count, so you have a durable record of exactly what was done.</p>
 
 <h2 id="s14">14. Technical details</h2>
@@ -347,31 +353,32 @@
 <p>with <code>M = {(x,y) : I(x,y) &gt; &tau;}</code> and <code>&tau;</code> the Threshold setting from the Viewer (or 0.5 default), optionally after a per-frame normalisation. The pre-threshold image is first smoothed with a Gaussian of <code>&sigma; = 1.5</code> to suppress single-pixel noise spikes that would otherwise bias the moments.</p>
 <p>Shift is then <code>(dx, dy) = (ref_cx &minus; cur_cx, ref_cy &minus; cur_cy)</code>, with a confidence from the signal strength. If confidence is &ge; 0.25, the SSD refinement pass (&sect;14.7) tightens it further.</p>
 
-<h3 id="s14_5">14.5 Surface coarse tracking (reference-locked NCC + phase correlation)</h3>
-<p>Surface mode uses a two-stage approach. First, a <b>coarse</b> pass finds each frame's offset relative to frame&nbsp;0 via template matching. Second, a <b>fine</b> SSD refinement polishes it.</p>
+<h3 id="s14_5">14.5 Surface coarse tracking (anchor template, whole-frame search)</h3>
+<p>Surface mode uses a two-stage approach. First, a <b>coarse</b> pass finds your anchor in every frame, relative to frame&nbsp;0. Second, AP phase correlation and the SSD refinement (&sect;14.6&ndash;14.7) polish that to the whole field.</p>
 
 <h4>Why reference-locked rather than frame-to-frame?</h4>
 <p>Classical approach: find frame <i>i</i>'s shift relative to frame <i>i&minus;1</i>, chain them. Problem: errors accumulate. Over a long clip, the chain drifts and the final frames end up aligned to an entirely different piece of the Moon than frame&nbsp;0.</p>
-<p>SASpro's approach: lock every frame's template search to frame&nbsp;0's template <i>directly</i>. Drift literally cannot happen because the reference never moves. The cost is a wider search window per frame (because the predicted offset for a late frame can be large), which SASpro handles with a per-frame predictor seeded by the previous frame's result.</p>
+<p>SASpro's approach: match every frame against frame&nbsp;0's anchor <i>directly</i>. Drift cannot happen because the reference never moves.</p>
 
-<h4>The pipeline per frame</h4>
+<h4>Why search the whole frame?</h4>
+<p>Wind gusts, mount corrections and a bumped focuser make lunar and solar videos <i>jump</i>: the image can move tens or hundreds of pixels between two frames. A search window around the previous frame's position cannot follow a jump bigger than the window, and once it has lost the anchor it settles on the best wrong match inside the window and stays there. SASpro searches the <b>whole tracking area in every frame</b>, so a jump of any size is found as long as the anchor is still in view.</p>
+
+<h4>The pipeline</h4>
 <ol>
-  <li>Both frame&nbsp;0 and the current frame are converted to mono, downsampled by 2&times;, and bandpass-filtered to remove large-scale illumination gradients (the terminator) and tiny high-frequency noise:
-    <div class="matheq">\mathrm{BP}(I) = G_{\sigma_1}(I) - G_{\sigma_2}(I)</div>
-    with <code>&sigma;_1 = 1.2</code> and <code>&sigma;_2 = 6.0</code>, then z-normalised and Hann-windowed.</li>
-  <li>A 256&times;256 template is extracted from frame&nbsp;0 at the surface-anchor centre.</li>
-  <li>A search window of radius <code>search_radius = 96</code> pixels is centred on the predicted offset in the bandpassed current frame.</li>
-  <li><b>NCC template matching</b> (<code>cv2.matchTemplate</code> with <code>TM_CCOEFF_NORMED</code>) finds the integer-pixel best match in the window:
-    <div class="matheq">(\Delta x,\,\Delta y) = \arg\max_{(x,y)} \mathrm{NCC}(x,y)</div>
-    with confidence equal to the normalised cross-correlation score at the peak.</li>
-  <li><b>Subpixel refine</b> via <code>cv2.phaseCorrelate</code> on the matched patch:
-    <div class="matheq">R(f_1, f_2) = \mathcal{F}^{-1}\!\left\{\frac{F_1\,F_2^{*}}{|F_1\,F_2^{*}|}\right\}</div>
-    gives a subpixel shift adjustment plus a response-peak confidence.</li>
-  <li>Final confidence: <code>0.65 &times; NCC + 0.35 &times; phase-corr-response</code>.</li>
+  <li><b>Template.</b> The anchor rectangle, taken from frame&nbsp;0. Very small anchors are grown to at least 32&nbsp;px (or 12&nbsp;% of the frame's short side, whichever is larger), and each side is capped at 60&nbsp;% of the tracking area so there is always room to search. Without an anchor the central half of the frame is used. The tracking area is the ROI plus a 256&nbsp;px margin, clipped to the frame.</li>
+  <li><b>Band-pass.</b> Each frame is converted to mono and band-passed to remove the terminator, vignetting and transparency changes, so the match follows surface detail rather than brightness:
+    <div class="matheq">\mathrm{BP}(I) = G_{1}(I) - G_{8}(I)</div></li>
+  <li><b>Whole-area search.</b> <code>cv2.matchTemplate</code> with <code>TM_CCOEFF_NORMED</code> over the entire tracking area. Big frames are searched at a reduced scale (long side &le; 480&nbsp;px) to keep this cheap. The 4 best well-separated NCC peaks are kept as candidates.</li>
+  <li><b>Full-resolution refine.</b> Each candidate is re-matched at full resolution in a small window, and its subpixel position comes from a parabola through the NCC peak.</li>
+  <li><b>One path for the whole capture.</b> A candidate costs <code>1 &minus; NCC</code>; moving between consecutive frames costs up to 0.15, in proportion to the distance (full cost beyond 5&nbsp;% of the frame size). The cheapest path through all frames is chosen (Viterbi). A one-frame excursion to a lookalike crater pays the move twice &mdash; out and back &mdash; so it must out-score the true match by 0.3 to win. A real jump, where the only strong match is somewhere new, pays once and is followed at once.</li>
+  <li><b>Lost frames.</b> If a frame's chosen match scores below <code>max(0.2, &frac12; &times; the capture's median NCC)</code>, the anchor is treated as not found &mdash; out of view, cloud, a smeared frame. The frame is <b>dropped</b>: it moves to the end of the quality order and is never stacked or exported, even at Keep 100&nbsp;%. The log reports how many.</li>
 </ol>
 
+<h4>Guard on the polish</h4>
+<p>The AP and SSD stages start from the anchor track. If they move a frame an <i>outlying</i> distance from it &mdash; beyond <code>max(3&nbsp;px, median + 5 MAD-&sigma;)</code> of this capture's own polish moves &mdash; the polish has settled in a wrong SSD minimum, and the frame keeps its anchor shift. On seeing-heavy data (H&alpha;, for example) the whole-field consensus legitimately sits a few pixels from the anchor, which is why the limit follows the capture rather than a fixed number.</p>
+
 <h4>Parallelisation</h4>
-<p>The whole clip is split into stride-16 chunks that run in parallel across a thread pool. To seed each chunk's predictor, SASpro first does a sequential keyframe-boundary pass with a <i>wider</i> search radius (2&times; the normal one), so each chunk starts from a known-good predictor. This gives near-linear speedup without the drift risk of fully-parallel chaining.</p>
+<p>No frame depends on its neighbour's result, so the search runs fully in parallel across a thread pool. Only the path choice at the end is sequential, and it works on a handful of numbers per frame.</p>
 
 <h3 id="s14_6">14.6 AP phase correlation</h3>
 <p>For every AP on the reference, SASpro computes the per-AP shift that aligns the current frame's corresponding patch to the reference patch via phase correlation. Each AP:</p>

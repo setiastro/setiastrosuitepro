@@ -26,9 +26,17 @@ class WaveScaleHDRPresetDialog(QDialog):
         self.gamma.setDecimals(2)
         self.gamma.setValue(float(p.get("mask_gamma", 5.0)))
 
+        from .wavescale_hdr import clamp_amount
+        self.amount = QSpinBox()
+        self.amount.setRange(0, 100)
+        self.amount.setSuffix(" %")
+        self.amount.setValue(int(round(clamp_amount(p.get("amount", 1.0)) * 100)))
+        self.amount.setToolTip(self.tr("Blend with the original image: 100% is the full effect, 0% leaves it unchanged."))
+
         f.addRow(self.tr("Number of Scales:"), self.n_scales)
         f.addRow(self.tr("Coarse Compression:"), self.comp)
         f.addRow(self.tr("Mask Gamma:"), self.gamma)
+        f.addRow(self.tr("Amount:"), self.amount)
 
         btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel, parent=self)
         btns.accepted.connect(self.accept); btns.rejected.connect(self.reject)
@@ -39,6 +47,7 @@ class WaveScaleHDRPresetDialog(QDialog):
             "n_scales": int(self.n_scales.value()),
             "compression_factor": float(self.comp.value()),
             "mask_gamma": float(self.gamma.value()),
+            "amount": float(self.amount.value()) / 100.0,
         }
 
 
@@ -131,13 +140,14 @@ def apply_wavescale_hdr_to_doc(doc, preset: dict | None = None, mask_out: list |
     dialog's "HDR Mask" window at full size), appended once the edit is applied.
     """
     import numpy as np
-    from .wavescale_hdr import compute_wavescale_hdr, _B3
+    from .wavescale_hdr import compute_wavescale_hdr, _B3, clamp_amount, blend_amount
     from .wavescalede_preset import _get_doc_active_mask_2d
 
     p = dict(preset or {})
     ns = max(2, min(10, int(p.get("n_scales", 5))))
     comp = int(max(10, min(500, round(float(p.get("compression_factor", 1.5)) * 100)))) / 100.0
     mg = int(max(10, min(1000, round(float(p.get("mask_gamma", 5.0)) * 100)))) / 100.0
+    amount = clamp_amount(p.get("amount", 1.0))
 
     base = getattr(doc, "image", None)
     if base is None:
@@ -157,6 +167,7 @@ def apply_wavescale_hdr_to_doc(doc, preset: dict | None = None, mask_out: list |
         mask = np.clip(mask * m_doc, 0.0, 1.0)
     m3 = np.repeat(mask[..., None], 3, axis=2)
     out = rgb * (1.0 - m3) + transformed * m3
+    out = blend_amount(rgb, out.astype(np.float32, copy=False), amount)
 
     if mono_shape is not None:
         out = np.mean(out, axis=2, dtype=np.float32)
@@ -165,7 +176,7 @@ def apply_wavescale_hdr_to_doc(doc, preset: dict | None = None, mask_out: list |
     out = np.clip(out, 0.0, 1.0).astype(np.float32, copy=False)
     doc.set_image(out, metadata={"step_name": "WaveScale HDR", "command_id": "wavescale_hdr",
                                  "preset": {"n_scales": ns, "compression_factor": comp,
-                                            "mask_gamma": mg}},
+                                            "mask_gamma": mg, "amount": amount}},
                   step_name="WaveScale HDR")
     if mask_out is not None:
         mask_out.append(np.asarray(mask, dtype=np.float32))

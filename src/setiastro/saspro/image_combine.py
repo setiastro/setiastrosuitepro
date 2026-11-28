@@ -341,12 +341,6 @@ class ImageCombineDialog(QDialog):
         zrow.addWidget(btnFit)
         zrow.addWidget(btnIn)
 
-        # In-tool documentation button, flush right of the zoom controls
-        zrow.addStretch(1)
-        self.btn_help = make_help_button("image_combine", self)
-        from setiastro.saspro.shortcuts import ShortcutGrip
-        zrow.addWidget(ShortcutGrip("image_combine", self))
-        zrow.addWidget(self.btn_help)
 
         root.addLayout(zrow)
 
@@ -360,6 +354,15 @@ class ImageCombineDialog(QDialog):
         self.btnClose.clicked.connect(self.reject)
         self.btnApply.clicked.connect(self._commit)
         root.addWidget(btns)
+        # Grip + help: their own row at the bottom
+        from setiastro.saspro.shortcuts import ShortcutGrip
+        self.btn_help = make_help_button("image_combine", self)
+        grip_row = QHBoxLayout()
+        grip_row.setContentsMargins(0, 0, 0, 0)
+        grip_row.addWidget(ShortcutGrip("image_combine", self))
+        grip_row.addStretch(1)
+        grip_row.addWidget(self.btn_help)
+        root.addLayout(grip_row)
 
         # hooks
         for w in (self.cbA, self.cbB, self.cbMode):

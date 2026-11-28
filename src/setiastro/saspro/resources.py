@@ -190,6 +190,7 @@ class Icons:
     HISTOGRAM_TRANSFORM = property(lambda self: _resource_path('histogram_transform.png'))
     MOSAIC = property(lambda self: _resource_path('mosaic.png'))
     SURFACEMOSAIC = property(lambda self: _resource_path('surfacemosaic.png'))
+    LUNARSOLVER = property(lambda self: _resource_path('lunarsolver.png'))
     MOSAIC_PANELS = property(lambda self: _resource_path('mosaic_panels.png'))
     MOSAIC_ROBOTIC = property(lambda self: _resource_path('mosaic_robotic.png'))
     PLATE_SOLVE = property(lambda self: _resource_path('platesolve.png'))
@@ -474,6 +475,7 @@ _LEGACY_ICON_MAP = {
     'stacking_path': 'stacking.png',
     'pedestal_icon_path': 'pedestal.png',
     'surfacemosaic_path': 'surfacemosaic.png',
+    'lunarsolver_path': 'lunarsolver.png',
     'mosaic_panels_path': 'mosaic_panels.png',
     'mosaic_robotic_path': 'mosaic_robotic.png',
     'cosmeticcorrection_path': 'cosmeticcorrection.png',

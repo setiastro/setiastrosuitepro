@@ -1209,7 +1209,7 @@ class MultiscaleDecompDialog(QDialog):
 
     # ---------- UI ----------
     def _build_ui(self):
-        root = QHBoxLayout(self)
+        root = QVBoxLayout(self)
 
         self.splitter = QSplitter(Qt.Orientation.Horizontal)
         root.addWidget(self.splitter)
@@ -1483,8 +1483,6 @@ class MultiscaleDecompDialog(QDialog):
             ),
             parent=self,
         )
-        btn_row.addWidget(self.preset_drag_handle)
-
         btn_row.addStretch(1)
         btn_row.addWidget(self.btn_apply)
         btn_row.addWidget(self.btn_detail_new)
@@ -1492,14 +1490,20 @@ class MultiscaleDecompDialog(QDialog):
         btn_row.addWidget(self.btn_reset)
         btn_row.addWidget(self.btn_close)
         btn_row.addStretch(1)
-        btn_row.addWidget(self.preset_drag_handle)
-        btn_row.addWidget(make_help_button("multiscale_decomp", self))
         right.addLayout(btn_row)
 
         self.splitter.addWidget(left_widget)
         self.splitter.addWidget(right_widget)
         self.splitter.setStretchFactor(0, 2)
         self.splitter.setStretchFactor(1, 1)
+
+        # Grip + help: their own row along the bottom (grip at the lower left)
+        grip_row = QHBoxLayout()
+        grip_row.setContentsMargins(0, 0, 0, 0)
+        grip_row.addWidget(self.preset_drag_handle)
+        grip_row.addStretch(1)
+        grip_row.addWidget(make_help_button("multiscale_decomp", self))
+        root.addLayout(grip_row)
 
         # ----- Signals -----
         self.spin_layers.valueChanged.connect(self._on_layers_changed)

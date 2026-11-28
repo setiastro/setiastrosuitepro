@@ -4709,6 +4709,34 @@ Tools you added are taken off, the ones you removed come back, and the order is 
       <source>All Analysis Tools</source>
       <translation>Все инструменты анализа</translation>
     </message>
+    <message>
+      <source>Scripts &amp;&amp; &amp;Workflows</source>
+      <translation>Скрипты и &amp;рабочие процессы</translation>
+    </message>
+    <message>
+      <source>Help</source>
+      <translation>Справка</translation>
+    </message>
+    <message>
+      <source>Variable Stars &amp;&amp; Exoplanets...</source>
+      <translation>Переменные звёзды и экзопланеты...</translation>
+    </message>
+    <message>
+      <source>Find variable stars and exoplanet transits in time-series subs</source>
+      <translation>Поиск переменных звёзд и транзитов экзопланет во временных рядах кадров</translation>
+    </message>
+    <message>
+      <source>Don't ask again unless there are unsaved images</source>
+      <translation>Больше не спрашивать, если нет несохранённых изображений</translation>
+    </message>
+    <message>
+      <source>Preferences &gt; Always ask before exiting turns it back on.</source>
+      <translation>Включить снова: Настройки &gt; Всегда спрашивать перед выходом.</translation>
+    </message>
+    <message>
+      <source>Never saved:</source>
+      <translation>Ни разу не сохранены:</translation>
+    </message>
   </context>
   <context>
     <name>AstrobinExportTab</name>
@@ -12068,6 +12096,118 @@ the border) or the frame doesn't cover it.</source>
       <source>⚠️ Using approximate XISF WCS (star matching may be imprecise)</source>
       <translation>⚠️ Используется приближенная WCS из XISF (сопоставление звезд может быть неточным)</translation>
     </message>
+    <message>
+      <source>Variable Stars &amp; Exoplanets</source>
+      <translation>Переменные звёзды и экзопланеты</translation>
+    </message>
+    <message>
+      <source>Calibrated Subs</source>
+      <translation>Калиброванные кадры</translation>
+    </message>
+    <message>
+      <source>Load Frames</source>
+      <translation>Загрузка кадров</translation>
+    </message>
+    <message>
+      <source>Frames already loaded: {0}
+New frames selected: {1}</source>
+      <translation>Уже загружено кадров: {0}
+Выбрано новых кадров: {1}</translation>
+    </message>
+    <message>
+      <source>Add</source>
+      <translation>Добавить</translation>
+    </message>
+    <message>
+      <source>Replace</source>
+      <translation>Заменить</translation>
+    </message>
+    <message>
+      <source>Select Calibrated Frames</source>
+      <translation>Выбрать калиброванные кадры</translation>
+    </message>
+    <message>
+      <source>Fold at:</source>
+      <translation>Свернуть с:</translation>
+    </message>
+    <message>
+      <source>Lomb-Scargle peak</source>
+      <translation>Пик Lomb-Scargle</translation>
+    </message>
+    <message>
+      <source>2 × Lomb-Scargle peak</source>
+      <translation>2 × пик Lomb-Scargle</translation>
+    </message>
+    <message>
+      <source>BLS period</source>
+      <translation>Период BLS</translation>
+    </message>
+    <message>
+      <source>2 × BLS period</source>
+      <translation>2 × период BLS</translation>
+    </message>
+    <message>
+      <source>Custom</source>
+      <translation>Свой</translation>
+    </message>
+    <message>
+      <source>Period:</source>
+      <translation>Период:</translation>
+    </message>
+    <message>
+      <source>Detrended</source>
+      <translation>Без тренда</translation>
+    </message>
+    <message>
+      <source>Phase (0 = minimum light)</source>
+      <translation>Фаза (0 = минимум блеска)</translation>
+    </message>
+    <message>
+      <source>No usable points to fold.</source>
+      <translation>Нет пригодных точек для свертки.</translation>
+    </message>
+    <message>
+      <source>data</source>
+      <translation>данные</translation>
+    </message>
+    <message>
+      <source>phase bins (0.02)</source>
+      <translation>фазовые бины (0.02)</translation>
+    </message>
+    <message>
+      <source>{0} — folded at P = {1:.6f} d</source>
+      <translation>{0} — свернуто с P = {1:.6f} d</translation>
+    </message>
+    <message>
+      <source>Variable Star Fold</source>
+      <translation>Свертка переменной звезды</translation>
+    </message>
+    <message>
+      <source>Add the new frames to the loaded ones (another night, or another folder), or replace them?</source>
+      <translation>Добавить новые кадры к загруженным (другая ночь или другая папка) или заменить их?</translation>
+    </message>
+    <message>
+      <source>Period to fold at.  Lomb-Scargle suits smooth variation (pulsating
+stars); BLS suits eclipses.  An EW binary's two minima put both at
+half its period: use the 2 × choices.  Type a period for Custom.</source>
+      <translation>Период для свертки.  Lomb-Scargle подходит для плавного изменения (пульсирующие
+звёзды); BLS — для затмений.  Два минимума двойной EW дают обоим
+половину её периода: используйте варианты 2 ×.  Для «Свой» введите период.</translation>
+    </message>
+    <message>
+      <source>Off: the differential flux before detrending, every night at its own
+level.  A trend fit can take part of a slow variation with it.
+On: the curve with the main window's Detrend applied, which also
+divides out the step at a meridian flip.</source>
+      <translation>Выкл.: дифференциальный поток до удаления тренда, каждая ночь на своём
+уровне.  Подгонка тренда может забрать часть медленного изменения.
+Вкл.: кривая с удалением тренда главного окна, которое также
+убирает ступеньку при меридианном перевороте.</translation>
+    </message>
+    <message>
+      <source>P = {0:.6f} d ({1:.3f} h)   Minimum light JD {2:.5f} (UTC)   Binned amplitude {3:.3f} mag   {4:.1f} cycles covered</source>
+      <translation>P = {0:.6f} d ({1:.3f} ч)   Минимум блеска JD {2:.5f} (UTC)   Амплитуда бинов {3:.3f} mag   Охвачено циклов: {4:.1f}</translation>
+    </message>
   </context>
   <context>
     <name>FITSModifier</name>
@@ -17397,6 +17537,14 @@ Ctrl + клик и перетаскивание — панорама.
       <source>🖱️ &lt;b&gt;Click&lt;/b&gt;: show hue  &amp;nbsp;•&amp;nbsp; &lt;b&gt;Shift+Click&lt;/b&gt;: select that color  &amp;nbsp;•&amp;nbsp; &lt;b&gt;Ctrl+Drag&lt;/b&gt;: pan  &amp;nbsp;•&amp;nbsp; &lt;b&gt;Alt+Drag&lt;/b&gt;: draw region mask  &amp;nbsp;•&amp;nbsp; &lt;b&gt;Wheel&lt;/b&gt;: zoom</source>
       <translation>🖱️ &lt;b&gt;Клик&lt;/b&gt;: показать оттенок  &amp;nbsp;•&amp;nbsp; &lt;b&gt;Shift+клик&lt;/b&gt;: выбрать этот цвет  &amp;nbsp;•&amp;nbsp; &lt;b&gt;Ctrl+перетаскивание&lt;/b&gt;: панорама  &amp;nbsp;•&amp;nbsp; &lt;b&gt;Alt+перетаскивание&lt;/b&gt;: нарисовать маску области  &amp;nbsp;•&amp;nbsp; &lt;b&gt;Колесо&lt;/b&gt;: масштаб</translation>
     </message>
+    <message>
+      <source>Chromaticity</source>
+      <translation>Цветность</translation>
+    </message>
+    <message>
+      <source>Lightness</source>
+      <translation>Светлота</translation>
+    </message>
   </context>
   <context>
     <name>SettingsDialog</name>
@@ -18451,6 +18599,22 @@ Please restart SASpro to activate GPU acceleration.</source>
     <message>
       <source>System</source>
       <translation>Системная</translation>
+    </message>
+    <message>
+      <source>This is already being installed by the setup window. Help &gt; Welcome and Setup shows its progress.</source>
+      <translation>Это уже устанавливается окном настройки. Прогресс показан в «Справка &gt; Приветствие и настройка».</translation>
+    </message>
+    <message>
+      <source>Always ask before exiting</source>
+      <translation>Всегда спрашивать перед выходом</translation>
+    </message>
+    <message>
+      <source>Checked, SASpro asks before it closes.
+Unchecked, it only asks when an image has unsaved edits or was
+never saved, or an install or download is still running.</source>
+      <translation>Включено: SASpro спрашивает перед закрытием.
+Выключено: спрашивает, только если в изображении есть несохранённые изменения или оно ни разу
+не сохранялось, или ещё идёт установка или загрузка.</translation>
     </message>
   </context>
   <context>
@@ -25983,6 +26147,58 @@ Kept: the stacking folder and other paths, the loaded frames, the masters and th
 
 Сохраняются: папка сложения и другие пути, загруженные кадры, мастер-кадры и их выбор Dark/Flat, наборы регистрации и референсные кадры, ваши сохранённые профили и то, что измерила функция «Оптимизировать…». Допуск группировки сохраняется, пока кадры сгруппированы по нему.</translation>
     </message>
+    <message>
+      <source>New master after a gap of:</source>
+      <translation>Новый мастер после перерыва в:</translation>
+    </message>
+    <message>
+      <source> days</source>
+      <translation> дн.</translation>
+    </message>
+    <message>
+      <source>every night</source>
+      <translation>каждая ночь</translation>
+    </message>
+    <message>
+      <source>Darks with the same exposure, temperature, gain and offset make one master
+until there is a gap of more than this many days between the nights they
+were shot. A dark library shot over a few nights stays one master; darks
+from other months or years become separate masters, and each light uses
+the master nearest its own date.
+Every night: one master per night. Darks with no date combine as before.</source>
+      <translation>Дарки с одинаковыми выдержкой, температурой, усилением и смещением образуют один мастер,
+пока между ночами съёмки нет перерыва больше указанного числа дней.
+Библиотека дарков, снятая за несколько ночей, остаётся одним мастером; дарки других
+месяцев или лет становятся отдельными мастерами, и каждый лайт использует мастер,
+ближайший к своей дате.
+Каждая ночь: один мастер на ночь. Дарки без даты объединяются, как раньше.</translation>
+    </message>
+    <message>
+      <source>Shared session-detection toggle (also affects Lights and Flats).
+Darks don't use sessions: they combine by exposure, image size,
+temperature, gain and offset, and split only by 'New master after
+a gap of', so this setting does not change how darks are combined.</source>
+      <translation>Общий переключатель определения сессий (влияет также на лайты и флэты).
+Дарки не используют сессии: они объединяются по выдержке, размеру изображения,
+температуре, усилению и смещению и разделяются только параметром «Новый мастер
+после перерыва в», поэтому эта настройка не меняет объединение дарков.</translation>
+    </message>
+    <message>
+      <source>⚠ darks from {0}, {1} days from these frames</source>
+      <translation>⚠ дарки от {0}, {1} дн. от этих кадров</translation>
+    </message>
+    <message>
+      <source>Auto picks by size, then gain, exposure, date and temperature. Each flat group's Dark row shows its pick: choose another master, or None, there.</source>
+      <translation>Авто выбирает по размеру, затем по усилению, выдержке, дате и температуре. Строка «Дарк» каждой группы флэтов показывает выбор: там можно выбрать другой мастер или «Нет».</translation>
+    </message>
+    <message>
+      <source>Auto picks by size, then gain, exposure, date and temperature. Pick another master, or None, for this group only. Right-click frames to give them their own.</source>
+      <translation>Авто выбирает по размеру, затем по усилению, выдержке, дате и температуре. Выберите другой мастер или «Нет» только для этой группы. Щелкните кадры правой кнопкой, чтобы задать им собственный.</translation>
+    </message>
+    <message>
+      <source>Auto picks by size, then gain, exposure, date and temperature. Pick another master, or None, for this group only.</source>
+      <translation>Авто выбирает по размеру, затем по усилению, выдержке, дате и температуре. Выберите другой мастер или «Нет» только для этой группы.</translation>
+    </message>
   </context>
   <context>
     <name>StarSpikesDialogPro</name>
@@ -28990,6 +29206,14 @@ Open images, tool settings, presets and shortcuts are not changed.</source>
     <message>
       <source>analyze dither offsets from a set of frames or a completed stack run</source>
       <translation>анализ смещений дизеринга по набору кадров или завершенному сложению</translation>
+    </message>
+    <message>
+      <source>Variable Stars &amp;&amp; Exoplanets...</source>
+      <translation>Переменные звёзды и экзопланеты...</translation>
+    </message>
+    <message>
+      <source>Find variable stars and exoplanet transits in time-series subs</source>
+      <translation>Поиск переменных звёзд и транзитов экзопланет во временных рядах кадров</translation>
     </message>
   </context>
   <context>
@@ -38595,6 +38819,46 @@ SASpro проверяет эти расположения:
 
 Теги отображения и экспорта будут использовать sRGB, пока профиль не установлен.</translation>
     </message>
+    <message>
+      <source>FITS options</source>
+      <translation>Параметры FITS</translation>
+    </message>
+    <message>
+      <source>Same as source file</source>
+      <translation>Как в исходном файле</translation>
+    </message>
+    <message>
+      <source>Same as source file (bottom-up)</source>
+      <translation>Как в исходном файле (снизу вверх)</translation>
+    </message>
+    <message>
+      <source>Same as source file (top-down)</source>
+      <translation>Как в исходном файле (сверху вниз)</translation>
+    </message>
+    <message>
+      <source>Top-down</source>
+      <translation>Сверху вниз</translation>
+    </message>
+    <message>
+      <source>Bottom-up</source>
+      <translation>Снизу вверх</translation>
+    </message>
+    <message>
+      <source>The order the image rows are stored in. SASpro and PixInsight read both,
+using the ROWORDER keyword. Siril shows top-down files upside down, so
+use Bottom-up for files going to Siril.
+Same as source file: bottom-up when the image came from a bottom-up
+FITS (Siril's own files), top-down otherwise.</source>
+      <translation>Порядок, в котором хранятся строки изображения. SASpro и PixInsight читают оба
+по ключевому слову ROWORDER. Siril показывает файлы «сверху вниз» перевёрнутыми,
+поэтому для файлов для Siril выбирайте «Снизу вверх».
+Как в исходном файле: снизу вверх, если изображение открыто из FITS «снизу вверх»
+(собственные файлы Siril), иначе сверху вниз.</translation>
+    </message>
+    <message>
+      <source>Row order</source>
+      <translation>Порядок строк</translation>
+    </message>
   </context>
   <context>
     <name>FXDialog</name>
@@ -39727,6 +39991,14 @@ Drawn chart: a vector star chart (SVG / PDF / PNG / new image).</source>
       <source>💡 The Icon Cheat Sheet under View → Shortcuts shows every toolbar icon with its function at a glance.</source>
       <translation>💡 Шпаргалка по иконкам в меню «Вид → Горячие клавиши» показывает каждую иконку панели инструментов с ее функцией.</translation>
     </message>
+    <message>
+      <source>💡 Bored? Check under the Help menu. You're welcome. 🙂</source>
+      <translation>💡 Скучно? Загляните в меню «Справка». Не за что. 🙂</translation>
+    </message>
+    <message>
+      <source>💡 Press F1 (Help → Documentation) to browse and search every SASpro help page.</source>
+      <translation>💡 Нажмите F1 (Справка → Документация), чтобы просматривать и искать все страницы справки SASpro.</translation>
+    </message>
   </context>
   <context>
     <name>FirstStepsTour</name>
@@ -39893,6 +40165,14 @@ Crop is under Functions → Repair &amp; Retouch → Crop. Drag the box inside t
     <message>
       <source>First Steps</source>
       <translation>Первые шаги</translation>
+    </message>
+    <message>
+      <source>Ctrl+Z undoes any step, and Edit → History Explorer lists them all.
+
+A full workflow removes gradients and calibrates colour before stretching. The beginner tutorial walks through it.</source>
+      <translation>Ctrl+Z отменяет любой шаг, а «Правка → Просмотр истории» показывает их все.
+
+Полный процесс удаляет градиенты и калибрует цвет перед растяжением. Это разбирается в руководстве для начинающих.</translation>
     </message>
   </context>
   <context>
@@ -41686,6 +41966,10 @@ Drop directly on an image to apply them headlessly.</source>
     <message>
       <source>Workflow Assistant</source>
       <translation>Помощник рабочего процесса</translation>
+    </message>
+    <message>
+      <source>Variable Stars &amp; Exoplanets</source>
+      <translation>Переменные звёзды и экзопланеты</translation>
     </message>
   </context>
   <context>
@@ -54878,6 +55162,84 @@ If the result looks overcorrected, try 'poly2' instead of '{7}'.</source>
       <source>Step 1: Fetch Stars &amp;&amp; Spectra from Current View</source>
       <translation>Шаг 1: Получить звезды и спектры из текущего вида</translation>
     </message>
+    <message>
+      <source>Optical Chain</source>
+      <translation>Оптический тракт</translation>
+    </message>
+    <message>
+      <source>Options</source>
+      <translation>Параметры</translation>
+    </message>
+    <message>
+      <source>Calibrate</source>
+      <translation>Калибровать</translation>
+    </message>
+    <message>
+      <source>Light-pollution or UV/IR-cut filters in the light path, if any.</source>
+      <translation>Фильтры от светового загрязнения или UV/IR-cut на оптическом пути, если есть.</translation>
+    </message>
+    <message>
+      <source>Also make the sky background neutral grey after calibrating.</source>
+      <translation>Также делает фон неба нейтрально-серым после калибровки.</translation>
+    </message>
+    <message>
+      <source>The camera's sensor (its QE curve).</source>
+      <translation>Сенсор камеры (его кривая QE).</translation>
+    </message>
+    <message>
+      <source>Plot the filter, sensor and star curves against each other.</source>
+      <translation>Показать вместе кривые фильтров, сенсора и звезд.</translation>
+    </message>
+    <message>
+      <source>The star that should come out white. G2V (the Sun) is the usual choice;
+an average spiral galaxy is close to it.</source>
+      <translation>Звезда, которая должна получиться белой. Обычно выбирают G2V (Солнце);
+средняя спиральная галактика близка к ней.</translation>
+    </message>
+    <message>
+      <source>Calibrates the colour of the active view from the spectra of the stars in it. It needs a plate solution and offers to make one.</source>
+      <translation>Калибрует цвет активного вида по спектрам звезд на нем. Нужен Plate Solve; инструмент предложит его выполнить.</translation>
+    </message>
+    <message>
+      <source>Find the stars, look up their spectra, measure them and correct the colour
+of the active view, all in one go.</source>
+      <translation>Найти звезды, получить их спектры, измерить их и исправить цвет
+активного вида — все за один раз.</translation>
+    </message>
+    <message>
+      <source>&lt;b&gt;Calibrated&lt;/b&gt; with {0} stars ({1} Gaia XP spectra, {2} Pickles templates) in {3:.1f} s.&lt;br&gt;Model: {4} · R ratio @ x=1: {5:.4f} · B ratio @ x=1: {6:.4f}</source>
+      <translation>&lt;b&gt;Откалибровано&lt;/b&gt; по {0} звездам ({1} спектров Gaia XP, {2} шаблонов Pickles) за {3:.1f} с.&lt;br&gt;Модель: {4} · Отношение R @ x=1: {5:.4f} · Отношение B @ x=1: {6:.4f}</translation>
+    </message>
+    <message>
+      <source>No Image</source>
+      <translation>Нет изображения</translation>
+    </message>
+    <message>
+      <source>Open an image and make it the active view first.</source>
+      <translation>Сначала откройте изображение и сделайте его активным видом.</translation>
+    </message>
+    <message>
+      <source>This image isn't plate-solved yet. Run the plate solver now?</source>
+      <translation>Для этого изображения еще не выполнен Plate Solve. Запустить его сейчас?</translation>
+    </message>
+    <message>
+      <source>Plate Solve Error</source>
+      <translation>Ошибка Plate Solve</translation>
+    </message>
+    <message>
+      <source>Plate Solve Failed</source>
+      <translation>Ошибка Plate Solve</translation>
+    </message>
+    <message>
+      <source>Calibrated ✓</source>
+      <translation>Откалибровано ✓</translation>
+    </message>
+    <message>
+      <source>Applied to this image. It turns back into Calibrate when you change a setting,
+switch to another image or undo.</source>
+      <translation>Применено к этому изображению. Снова становится «Калибровать», когда вы меняете настройку,
+переключаетесь на другое изображение или отменяете действие.</translation>
+    </message>
   </context>
   <context>
     <name>SLaPToolkit</name>
@@ -56312,6 +56674,402 @@ Stars are selected brightest-first, XP stars prioritized.
       <source>🔬  Step 2: Run SSSC Calibration</source>
       <translation>🔬  Шаг 2: запустить калибровку SSSC</translation>
     </message>
+    <message>
+      <source>Optical Chain</source>
+      <translation>Оптический тракт</translation>
+    </message>
+    <message>
+      <source>Options</source>
+      <translation>Параметры</translation>
+    </message>
+    <message>
+      <source>Calibrate</source>
+      <translation>Калибровать</translation>
+    </message>
+    <message>
+      <source>Light-pollution or UV/IR-cut filters in the light path, if any.</source>
+      <translation>Фильтры от светового загрязнения или UV/IR-cut на оптическом пути, если есть.</translation>
+    </message>
+    <message>
+      <source>Also make the sky background neutral grey after calibrating.</source>
+      <translation>Также делает фон неба нейтрально-серым после калибровки.</translation>
+    </message>
+    <message>
+      <source>The star that should come out white. G2V (the Sun) is the usual choice.</source>
+      <translation>Звезда, которая должна получиться белой. Обычно выбирают G2V (Солнце).</translation>
+    </message>
+    <message>
+      <source>No sensor curve: SSSC solves the sensor's response from the stars.</source>
+      <translation>Без кривой сенсора: SSSC определяет отклик сенсора по звездам.</translation>
+    </message>
+    <message>
+      <source>Session History</source>
+      <translation>История сессий</translation>
+    </message>
+    <message>
+      <source>Max stars:</source>
+      <translation>Макс. звезд:</translation>
+    </message>
+    <message>
+      <source>Calibrates the colour of the active view from Gaia XP star spectra, solving the sensor's response instead of assuming it. It needs a plate solution and offers to make one.</source>
+      <translation>Калибрует цвет активного вида по звездным спектрам Gaia XP, определяя отклик сенсора, а не предполагая его. Нужен Plate Solve; инструмент предложит его выполнить.</translation>
+    </message>
+    <message>
+      <source>Find the stars, look up their spectra, measure them, solve the system
+response and correct the colour of the active view, all in one go.</source>
+      <translation>Найти звезды, получить их спектры, измерить их, определить отклик
+системы и исправить цвет активного вида — все за один раз.</translation>
+    </message>
+    <message>
+      <source>&lt;b&gt;Calibrated&lt;/b&gt; with {0} stars ({1} Gaia XP spectra, {2} Pickles templates) in {3:.1f} s.&lt;br&gt;{4} · B-V {5:.2f} – {6:.2f} · residual RMS {7:.4f} · session runs {8}&lt;br&gt;Gains: k_R={9:.4f}  k_G={10:.4f}  k_B={11:.4f} · {12}</source>
+      <translation>&lt;b&gt;Откалибровано&lt;/b&gt; по {0} звездам ({1} спектров Gaia XP, {2} шаблонов Pickles) за {3:.1f} с.&lt;br&gt;{4} · B-V {5:.2f} – {6:.2f} · остаточное RMS {7:.4f} · запусков сессии {8}&lt;br&gt;Усиления: k_R={9:.4f}  k_G={10:.4f}  k_B={11:.4f} · {12}</translation>
+    </message>
+    <message>
+      <source>
+ 
+&lt;h2&gt;What is SSSC?&lt;/h2&gt;
+&lt;p&gt;
+SSSC (Spectrophotometric Standard Star Calibration) is SetiAstro&amp;rsquo;s next-generation
+empirical color calibration, derived directly from the photometric calibration pipeline
+used internally by the Gaia space mission (Riello et al. 2021). The same mathematical
+framework that Gaia uses to self-calibrate a billion stars is applied here to calibrate
+your image &amp;mdash; using Gaia&amp;rsquo;s own XP stellar spectra as the reference standard.
+&lt;/p&gt;
+&lt;p&gt;
+Traditional calibration tools require a &lt;b&gt;sensor QE curve&lt;/b&gt; as input. The problem is
+that most published QE curves are promotional material &amp;mdash; measured at room temperature
+on a bare die, often representing a best-case sample rather than an independently-verified
+response for your specific sensor batch. They have no knowledge of your AR coating, your
+optical train, your atmosphere, or your electronics chain. The curve you apply is rarely
+the curve your camera actually has in practice.
+&lt;/p&gt;
+&lt;p&gt;
+&lt;b&gt;SSSC abandons the QE curve entirely.&lt;/b&gt; Instead, it solves for the true effective
+system throughput R(&amp;lambda;) directly from your image data, using Gaia XP stellar
+spectra as calibration references. No assumptions. No datasheets. Just your actual system,
+measured empirically from the stars in your field.
+&lt;/p&gt;
+ 
+&lt;hr&gt;
+ 
+&lt;h2&gt;How does it work?&lt;/h2&gt;
+&lt;p&gt;
+For each calibrator star, Gaia has measured a continuous flux spectrum from ~330&amp;ndash;1050&amp;nbsp;nm
+at ~2.5&amp;nbsp;nm resolution. SSSC integrates those spectra through your filter transmission
+curves and solves for the R(&amp;lambda;) that best explains the difference between what Gaia
+predicts and what your camera actually measured. The core equation is:
+&lt;/p&gt;
+&lt;p style="margin-left:20px; font-family:monospace; color:#88ffcc;"&gt;
+measured&lt;sub&gt;c&lt;/sub&gt;(i) = k&lt;sub&gt;c&lt;/sub&gt; &amp;times; &amp;int; flux&lt;sub&gt;i&lt;/sub&gt;(&amp;lambda;)
+&amp;times; T&lt;sub&gt;filter&lt;/sub&gt;(&amp;lambda;) &amp;times; R(&amp;lambda;) d&amp;lambda;
+&lt;/p&gt;
+&lt;p&gt;
+R(&amp;lambda;) absorbs everything the datasheet cannot tell you: true sensor QE at
+operating temperature, mirror and lens throughput, AR coating, field flattener,
+and atmospheric extinction. Filter transmission curves remain as inputs &amp;mdash;
+manufacturers publish reliable interferometric measurements for these.
+&lt;/p&gt;
+ 
+&lt;hr&gt;
+ 
+&lt;h2&gt;Bootstrap Stages&lt;/h2&gt;
+&lt;p&gt;
+The solution quality improves automatically as more calibrator stars are available.
+SSSC selects the highest stage your field supports:
+&lt;/p&gt;
+&lt;ul&gt;
+  &lt;li&gt;&lt;span class="stage"&gt;Stage 1 (&amp;lt;50 stars):&lt;/span&gt;
+      Scalar per-channel gains k&lt;sub&gt;R&lt;/sub&gt;, k&lt;sub&gt;G&lt;/sub&gt;, k&lt;sub&gt;B&lt;/sub&gt;.
+      This is equivalent to traditional scalar SPCC &amp;mdash; a single white-balance
+      correction per channel. Always runs as the baseline.&lt;/li&gt;
+  &lt;li&gt;&lt;span class="stage"&gt;Stage 2 (50&amp;ndash;200 stars):&lt;/span&gt;
+      Color-dependent gain within each band, fit as slope, affine, or quadratic
+      depending on which best describes your data. Captures the dominant wavelength
+      dependence within each filter passband. Comparable to SASpro&amp;rsquo;s polynomial
+      SPCC fit, which already exceeds traditional scalar SPCC quality on most normal
+      star fields &amp;mdash; and SSSC achieves this without any QE curve assumption at all.&lt;/li&gt;
+  &lt;li&gt;&lt;span class="stage"&gt;Stage 3 (200+ stars, B&amp;minus;V span &amp;ge; 1.5):&lt;/span&gt;
+      Full R(&amp;lambda;) shape solved per channel on piecewise-linear control points
+      by an exact least-squares fit. Hot blue stars constrain the blue edge of each filter;
+      cool red stars constrain the red edge. Each run&amp;rsquo;s solution is saved to the
+      session history, which the multi-night Stage 4 will combine.&lt;/li&gt;
+  &lt;li&gt;&lt;span class="stage future"&gt;Stage 4 (future &amp;mdash; DR4 + multi-night):&lt;/span&gt;
+      Atmosphere/hardware decorrelation. By imaging across multiple nights at different
+      airmasses, R(&amp;lambda;) separates into a stable hardware component and a variable
+      atmospheric component. Once converged, your empirically-measured QE curve is locked
+      in permanently &amp;mdash; calibration collapses back to Stage 2 speed with Stage 3+
+      accuracy, using your actual curve instead of a manufacturer guess.&lt;/li&gt;
+&lt;/ul&gt;
+ 
+&lt;hr&gt;
+ 
+&lt;h2&gt;What can SSSC do today with Gaia DR3?&lt;/h2&gt;
+&lt;p&gt;
+Gaia DR3 provides continuous XP spectra for stars to about G&amp;nbsp;&amp;le;&amp;nbsp;15.5.
+On a typical wide-field image (0.5&amp;ndash;2&amp;deg; FOV) this yields 200&amp;ndash;600
+calibrator stars, comfortably in Stage 3 territory for most fields.
+&lt;/p&gt;
+&lt;p&gt;
+In testing on real data, SSSC&amp;rsquo;s star colours match a full spectrophotometric
+standard to within 1&amp;ndash;2&amp;nbsp;% without any QE curve. The residual RMS of every
+stage that ran is shown in the Calibration Quality waterfall panel on every run.
+&lt;/p&gt;
+&lt;p class="note"&gt;
+Tip: run SSSC on images from the same rig across several nights. Each run&amp;rsquo;s
+R(&amp;lambda;) is saved to the session history, ready for the multi-night Stage 4.
+The Camera&amp;nbsp;/&amp;nbsp;Rig label field separates history per sensor so solutions
+don&amp;rsquo;t mix between different imaging trains.
+&lt;/p&gt;
+ 
+&lt;hr&gt;
+ 
+&lt;h2 class="future"&gt;What will SSSC do with Gaia DR4?&lt;/h2&gt;
+&lt;p&gt;
+Gaia DR4 is expected to extend XP spectra to G&amp;nbsp;&amp;le;&amp;nbsp;16.5, roughly
+&lt;b&gt;tripling the calibrator star count&lt;/b&gt; in most fields. This means:
+&lt;/p&gt;
+&lt;ul&gt;
+  &lt;li&gt;Fields that currently reach Stage 2 will reliably reach Stage 3&lt;/li&gt;
+  &lt;li&gt;Stage 3 with 16+ control points becomes well-constrained (&amp;gt;1000 stars)&lt;/li&gt;
+  &lt;li&gt;Stage 4 atmosphere decorrelation becomes feasible &amp;mdash; enough stars per
+      session to resolve the airmass-dependent component of R(&amp;lambda;)&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;
+The Stage 4 endgame: once your hardware R(&amp;lambda;) has converged from multi-night
+data, it is saved permanently to your session cache. Every subsequent calibration
+run loads that curve as a known input &amp;mdash; no solver needed, Stage 2 speed,
+empirically-correct accuracy. The curve also self-maintains: mirror oxidation,
+sensor aging, filter changes all appear as drift in R(&amp;lambda;) and trigger an update.
+&lt;/p&gt;
+ 
+&lt;hr&gt;
+ 
+&lt;h2&gt;References&lt;/h2&gt;
+&lt;ul&gt;
+  &lt;li&gt;Riello et al. 2021 &amp;mdash; &lt;i&gt;Gaia EDR3: Photometric content and validation&lt;/i&gt;,
+      A&amp;amp;A 649, A3 &amp;mdash; the calibration pipeline SSSC replicates&lt;/li&gt;
+  &lt;li&gt;Carrasco et al. 2021 &amp;mdash; &lt;i&gt;Gaia photometric science alerts programme&lt;/i&gt;&lt;/li&gt;
+  &lt;li&gt;Fabricius et al. 2021 &amp;mdash; &lt;i&gt;Gaia EDR3: Catalogue validation&lt;/i&gt;&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p class="note" style="margin-top:16px;"&gt;
+SSSC is part of SetiAstro Suite Pro &amp;mdash; www.setiastro.com
+&lt;/p&gt;
+</source>
+      <translation>
+
+&lt;h2&gt;Что такое SSSC?&lt;/h2&gt;
+&lt;p&gt;
+SSSC (Spectrophotometric Standard Star Calibration) — эмпирическая калибровка цвета
+нового поколения от SetiAstro, выведенная непосредственно из конвейера фотометрической калибровки,
+который использует космическая миссия Gaia (Riello et al. 2021). Тот же математический
+аппарат, с помощью которого Gaia самокалибрует миллиард звезд, применяется здесь для калибровки
+вашего изображения &amp;mdash; с собственными звездными спектрами XP Gaia в качестве эталона.
+&lt;/p&gt;
+&lt;p&gt;
+Традиционным инструментам калибровки на входе нужна &lt;b&gt;кривая QE сенсора&lt;/b&gt;. Проблема в том,
+что большинство опубликованных кривых QE &amp;mdash; рекламный материал: они измерены при комнатной температуре
+на голом кристалле и часто отражают лучший образец, а не независимо проверенный
+отклик именно вашей партии сенсоров. Они ничего не знают о вашем просветлении, вашем
+оптическом тракте, атмосфере или электронике. Кривая, которую вы применяете, редко совпадает
+с той, что реально есть у вашей камеры на практике.
+&lt;/p&gt;
+&lt;p&gt;
+&lt;b&gt;SSSC полностью отказывается от кривой QE.&lt;/b&gt; Вместо этого она находит истинное эффективное
+пропускание системы R(&amp;lambda;) прямо по данным вашего изображения, используя звездные спектры Gaia XP
+как калибровочные эталоны. Никаких допущений. Никаких даташитов. Только ваша реальная система,
+измеренная эмпирически по звездам вашего поля.
+&lt;/p&gt;
+
+&lt;hr&gt;
+
+&lt;h2&gt;Как это работает?&lt;/h2&gt;
+&lt;p&gt;
+Для каждой калибровочной звезды Gaia измерила непрерывный спектр потока в диапазоне ~330&amp;ndash;1050&amp;nbsp;нм
+с разрешением ~2.5&amp;nbsp;нм. SSSC интегрирует эти спектры через кривые пропускания
+ваших фильтров и находит R(&amp;lambda;), которая лучше всего объясняет разницу между тем, что Gaia
+предсказывает, и тем, что реально измерила ваша камера. Основное уравнение:
+&lt;/p&gt;
+&lt;p style="margin-left:20px; font-family:monospace; color:#88ffcc;"&gt;
+measured&lt;sub&gt;c&lt;/sub&gt;(i) = k&lt;sub&gt;c&lt;/sub&gt; &amp;times; &amp;int; flux&lt;sub&gt;i&lt;/sub&gt;(&amp;lambda;)
+&amp;times; T&lt;sub&gt;filter&lt;/sub&gt;(&amp;lambda;) &amp;times; R(&amp;lambda;) d&amp;lambda;
+&lt;/p&gt;
+&lt;p&gt;
+R(&amp;lambda;) вбирает все, чего не скажет даташит: истинную QE сенсора при
+рабочей температуре, пропускание зеркал и линз, просветление, корректор поля
+и атмосферную экстинкцию. Кривые пропускания фильтров остаются входными данными &amp;mdash;
+производители публикуют для них надежные интерферометрические измерения.
+&lt;/p&gt;
+
+&lt;hr&gt;
+
+&lt;h2&gt;Этапы бутстрапа&lt;/h2&gt;
+&lt;p&gt;
+Качество решения автоматически растет по мере увеличения числа калибровочных звезд.
+SSSC выбирает наивысший этап, который позволяет ваше поле:
+&lt;/p&gt;
+&lt;ul&gt;
+  &lt;li&gt;&lt;span class="stage"&gt;Этап 1 (&amp;lt;50 звезд):&lt;/span&gt;
+      Скалярные поканальные коэффициенты k&lt;sub&gt;R&lt;/sub&gt;, k&lt;sub&gt;G&lt;/sub&gt;, k&lt;sub&gt;B&lt;/sub&gt;.
+      Это эквивалентно традиционной скалярной SPCC &amp;mdash; одна коррекция баланса белого
+      на канал. Всегда выполняется как базовый уровень.&lt;/li&gt;
+  &lt;li&gt;&lt;span class="stage"&gt;Этап 2 (50&amp;ndash;200 звезд):&lt;/span&gt;
+      Зависящий от цвета коэффициент внутри каждой полосы: наклон, аффинная или квадратичная модель
+      &amp;mdash; в зависимости от того, что лучше описывает ваши данные. Учитывает основную зависимость
+      от длины волны в полосе пропускания каждого фильтра. Сопоставимо с полиномиальной
+      аппроксимацией SPCC в SASpro, которая уже превосходит традиционную скалярную SPCC на большинстве обычных
+      звездных полей &amp;mdash; а SSSC достигает этого вообще без допущений о кривой QE.&lt;/li&gt;
+  &lt;li&gt;&lt;span class="stage"&gt;Этап 3 (200+ звезд, диапазон B&amp;minus;V &amp;ge; 1.5):&lt;/span&gt;
+      Полная форма R(&amp;lambda;) решается для каждого канала по кусочно-линейным опорным точкам точной подгонкой методом наименьших квадратов. Горячие голубые звезды задают синий край каждого фильтра; холодные красные &amp;mdash; красный край. Решение каждого запуска сохраняется в истории сессии, которую объединит многоночной этап 4.&lt;/li&gt;
+  &lt;li&gt;&lt;span class="stage future"&gt;Этап 4 (в будущем &amp;mdash; DR4 + несколько ночей):&lt;/span&gt;
+      Декорреляция атмосферы и оборудования. При съемке в течение нескольких ночей на разных
+      воздушных массах R(&amp;lambda;) разделяется на стабильную аппаратную составляющую и переменную
+      атмосферную. После сходимости ваша эмпирически измеренная кривая QE фиксируется
+      навсегда &amp;mdash; калибровка возвращается к скорости этапа 2 с точностью этапа 3+,
+      используя вашу реальную кривую вместо догадок производителя.&lt;/li&gt;
+&lt;/ul&gt;
+
+&lt;hr&gt;
+
+&lt;h2&gt;Что SSSC умеет сегодня с Gaia DR3?&lt;/h2&gt;
+&lt;p&gt;
+Gaia DR3 дает непрерывные спектры XP для звезд примерно до G&amp;nbsp;&amp;le;&amp;nbsp;15.5.
+На типичном широкоугольном изображении (поле 0.5&amp;ndash;2&amp;deg;) это дает 200&amp;ndash;600
+калибровочных звезд &amp;mdash; уверенно в зоне этапа 3 для большинства полей.
+&lt;/p&gt;
+&lt;p&gt;
+В тестах на реальных данных цвета звезд SSSC совпадают с полным спектрофотометрическим стандартом в пределах 1&amp;ndash;2&amp;nbsp;% без какой-либо кривой QE. Остаточный RMS каждого выполненного этапа показывается на каскадной панели «Качество калибровки» при каждом запуске.
+&lt;/p&gt;
+&lt;p class="note"&gt;
+Совет: запускайте SSSC на изображениях с одного сетапа в течение нескольких ночей. R(&amp;lambda;) каждого запуска сохраняется в истории сессии и пригодится для многоночного этапа 4. Поле «Камера&amp;nbsp;/&amp;nbsp;сетап» разделяет историю по сенсорам, чтобы решения разных оптических трактов не смешивались.
+&lt;/p&gt;
+
+&lt;hr&gt;
+
+&lt;h2 class="future"&gt;Что SSSC сможет с Gaia DR4?&lt;/h2&gt;
+&lt;p&gt;
+Ожидается, что Gaia DR4 расширит спектры XP до G&amp;nbsp;&amp;le;&amp;nbsp;16.5, примерно
+&lt;b&gt;утроив число калибровочных звезд&lt;/b&gt; в большинстве полей. Это означает:
+&lt;/p&gt;
+&lt;ul&gt;
+  &lt;li&gt;Поля, которые сейчас достигают этапа 2, будут надежно достигать этапа 3&lt;/li&gt;
+  &lt;li&gt;Этап 3 с 16+ опорными точками станет хорошо обусловленным (&amp;gt;1000 звезд)&lt;/li&gt;
+  &lt;li&gt;Декорреляция атмосферы на этапе 4 станет осуществимой &amp;mdash; достаточно звезд за
+      сессию, чтобы выделить зависящую от воздушной массы составляющую R(&amp;lambda;)&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;
+Конечная цель этапа 4: как только аппаратная R(&amp;lambda;) сойдется по данным нескольких
+ночей, она навсегда сохраняется в кэше сессий. Каждый последующий запуск калибровки
+загружает эту кривую как известные входные данные &amp;mdash; решатель не нужен, скорость этапа 2,
+эмпирически верная точность. Кривая также поддерживает себя сама: окисление зеркала,
+старение сенсора, смена фильтров проявляются как дрейф R(&amp;lambda;) и запускают обновление.
+&lt;/p&gt;
+
+&lt;hr&gt;
+
+&lt;h2&gt;Литература&lt;/h2&gt;
+&lt;ul&gt;
+  &lt;li&gt;Riello et al. 2021 &amp;mdash; &lt;i&gt;Gaia EDR3: Photometric content and validation&lt;/i&gt;,
+      A&amp;amp;A 649, A3 &amp;mdash; конвейер калибровки, который воспроизводит SSSC&lt;/li&gt;
+  &lt;li&gt;Carrasco et al. 2021 &amp;mdash; &lt;i&gt;Gaia photometric science alerts programme&lt;/i&gt;&lt;/li&gt;
+  &lt;li&gt;Fabricius et al. 2021 &amp;mdash; &lt;i&gt;Gaia EDR3: Catalogue validation&lt;/i&gt;&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p class="note" style="margin-top:16px;"&gt;
+SSSC входит в состав SetiAstro Suite Pro &amp;mdash; www.setiastro.com
+&lt;/p&gt;
+</translation>
+    </message>
+    <message>
+      <source>  ✓ Stage 3 (full R(λ)) solved from {0} stars.
+  Saved to the session history of this filter+camera combination.</source>
+      <translation>  ✓ Этап 3 (полная R(λ)) решен, звезд: {0}.
+  Сохранено в истории сессии этой комбинации фильтр+камера.</translation>
+    </message>
+    <message>
+      <source>The stars do not follow these filter curves well (scalar fit residual {0:.0%}). Check the filters chosen: an OSC camera behind a UV/IR cut needs the UV/IR-cut curves, or the cut filter as LP/Cut.</source>
+      <translation>Звезды плохо следуют этим кривым фильтров (остаток скалярной подгонки {0:.0%}). Проверьте выбранные фильтры: камере OSC за фильтром UV/IR-cut нужны кривые UV/IR-cut или этот фильтр как LP/Cut.</translation>
+    </message>
+    <message>
+      <source>Calibrated ✓</source>
+      <translation>Откалибровано ✓</translation>
+    </message>
+    <message>
+      <source>Applied to this image. It turns back into Calibrate when you change a setting,
+switch to another image or undo.</source>
+      <translation>Применено к этому изображению. Снова становится «Калибровать», когда вы меняете настройку,
+переключаетесь на другое изображение или отменяете действие.</translation>
+    </message>
+    <message>
+      <source>Every calibration is saved under a session: the R/G/B filters, LP filters and
+camera / rig name together. Each run is solved on its own stars; the saved
+R(λ) curves and their uncertainties are the record the multi-night Stage 4
+will combine.</source>
+      <translation>Каждая калибровка сохраняется в сессии: фильтры R/G/B, LP-фильтры и
+название камеры / сетапа вместе. Каждый запуск решается по собственным звёздам;
+сохранённые кривые R(λ) и их неопределённости — это данные, которые объединит
+многоночной этап 4.</translation>
+    </message>
+    <message>
+      <source>View History…</source>
+      <translation>Показать историю…</translation>
+    </message>
+    <message>
+      <source>Every saved run of this session and the others: the R(λ) curves Stage 3
+measured, the channel gains run by run, and deleting a single bad run</source>
+      <translation>Каждый сохранённый запуск этой и других сессий: кривые R(λ), измеренные этапом 3,
+усиления каналов по запускам и удаление одного неудачного запуска</translation>
+    </message>
+    <message>
+      <source>Session history unavailable: {0}</source>
+      <translation>История сессий недоступна: {0}</translation>
+    </message>
+    <message>
+      <source>Session {0}</source>
+      <translation>Сессия {0}</translation>
+    </message>
+    <message>
+      <source>Last: {0}  ·  Stage {1}  ·  {2} stars  ·  RMS {3}</source>
+      <translation>Последний: {0}  ·  этап {1}  ·  звёзд: {2}  ·  RMS {3}</translation>
+    </message>
+    <message>
+      <source>No runs yet: the first calibration starts this setup's history.</source>
+      <translation>Запусков пока нет: первая калибровка начнёт историю этого сетапа.</translation>
+    </message>
+    <message>
+      <source>{0} other session(s) use these filters under a different camera name: see View History.</source>
+      <translation>Других сессий с этими фильтрами под другим названием камеры: {0}. См. «Показать историю».</translation>
+    </message>
+    <message>
+      <source>Name the camera / rig to keep each setup's history apart.</source>
+      <translation>Дайте название камере / сетапу, чтобы история каждого сетапа хранилась отдельно.</translation>
+    </message>
+    <message>
+      <source>1 run</source>
+      <translation>1 запуск</translation>
+    </message>
+    <message>
+      <source>{0} runs</source>
+      <translation>запусков: {0}</translation>
+    </message>
+    <message>
+      <source>nights unknown (no DATE-OBS)</source>
+      <translation>ночи неизвестны (нет DATE-OBS)</translation>
+    </message>
+    <message>
+      <source>1 night</source>
+      <translation>1 ночь</translation>
+    </message>
+    <message>
+      <source>{0} nights</source>
+      <translation>ночей: {0}</translation>
+    </message>
+    <message>
+      <source>{0}, {1}  ·  best: Stage {2} from {3} stars</source>
+      <translation>{0}, {1}  ·  лучший: этап {2}, звёзд: {3}</translation>
+    </message>
+    <message>
+      <source>LP: {0}</source>
+      <translation>LP: {0}</translation>
+    </message>
   </context>
   <context>
     <name>SSSCLoader</name>
@@ -57145,6 +57903,14 @@ Reload Scripts to see new ones.</source>
       <source>🖱️ &lt;b&gt;Click&lt;/b&gt;: show luminance &amp;nbsp;•&amp;nbsp; &lt;b&gt;Shift+Click&lt;/b&gt;: select that band &amp;nbsp;•&amp;nbsp; &lt;b&gt;Ctrl+Drag&lt;/b&gt;: pan &amp;nbsp;•&amp;nbsp; &lt;b&gt;Alt+Drag&lt;/b&gt;: draw region mask &amp;nbsp;•&amp;nbsp; &lt;b&gt;Wheel&lt;/b&gt;: zoom</source>
       <translation>🖱️ &lt;b&gt;Клик&lt;/b&gt;: показать яркость &amp;nbsp;•&amp;nbsp; &lt;b&gt;Shift+клик&lt;/b&gt;: выбрать эту полосу &amp;nbsp;•&amp;nbsp; &lt;b&gt;Ctrl+перетаскивание&lt;/b&gt;: панорама &amp;nbsp;•&amp;nbsp; &lt;b&gt;Alt+перетаскивание&lt;/b&gt;: нарисовать маску области &amp;nbsp;•&amp;nbsp; &lt;b&gt;Колесо&lt;/b&gt;: масштаб</translation>
     </message>
+    <message>
+      <source>Low:</source>
+      <translation>Нижняя граница:</translation>
+    </message>
+    <message>
+      <source>High:</source>
+      <translation>Верхняя граница:</translation>
+    </message>
   </context>
   <context>
     <name>SerStackerDialog</name>
@@ -57829,6 +58595,10 @@ Thank you for being part of this journey. Clear skies.</source>
     <message>
       <source>{0} of {1} recommended layers</source>
       <translation>{0} из {1} рекомендуемых слоев</translation>
+    </message>
+    <message>
+      <source>Close this window. Help &gt; Welcome and Setup opens it again.</source>
+      <translation>Закрыть это окно. Его снова открывает «Справка &gt; Приветствие и настройка».</translation>
     </message>
   </context>
   <context>
@@ -66319,6 +67089,14 @@ There's nothing to unwarp — the solution is already linear.</source>
       <source>WaveScale Dark Enhancer — Preset</source>
       <translation>WaveScale Dark Enhancer — Пресет</translation>
     </message>
+    <message>
+      <source>Amount:</source>
+      <translation>Количество:</translation>
+    </message>
+    <message>
+      <source>Blend with the original image: 100% is the full effect, 0% leaves it unchanged.</source>
+      <translation>Смешивание с исходным изображением: 100% — полный эффект, 0% оставляет его без изменений.</translation>
+    </message>
   </context>
   <context>
     <name>WaveScaleDarkEnhancerDialogPro</name>
@@ -66425,6 +67203,22 @@ Drop directly on an image to apply them headlessly.</source>
     <message>
       <source>Zoom Out</source>
       <translation>Уменьшить</translation>
+    </message>
+    <message>
+      <source>Amount:</source>
+      <translation>Количество:</translation>
+    </message>
+    <message>
+      <source>Amount (0-100%)
+
+Blends the finished result with the original image. 100% is the full effect, 0% leaves the image unchanged.
+
+Changing it after a Preview re-blends the preview without recomputing. Default: 100%.</source>
+      <translation>Количество (0-100%)
+
+Смешивает готовый результат с исходным изображением. 100% — полный эффект, 0% оставляет изображение без изменений.
+
+Изменение после предпросмотра пересмешивает предпросмотр без повторного расчёта. По умолчанию: 100%.</translation>
     </message>
   </context>
   <context>
@@ -66561,6 +67355,22 @@ Higher -&gt; larger-scale structure enhanced. Default: 5.</source>
       <source>Zoom Out</source>
       <translation>Уменьшить</translation>
     </message>
+    <message>
+      <source>Amount:</source>
+      <translation>Количество:</translation>
+    </message>
+    <message>
+      <source>Amount (0-100%)
+
+Blends the finished result with the original image. 100% is the full effect, 0% leaves the image unchanged.
+
+Changing it after a Preview re-blends the preview without recomputing. Default: 100%.</source>
+      <translation>Количество (0-100%)
+
+Смешивает готовый результат с исходным изображением. 100% — полный эффект, 0% оставляет изображение без изменений.
+
+Изменение после предпросмотра пересмешивает предпросмотр без повторного расчёта. По умолчанию: 100%.</translation>
+    </message>
   </context>
   <context>
     <name>WaveScaleHDRPresetDialog</name>
@@ -66583,6 +67393,14 @@ Higher -&gt; larger-scale structure enhanced. Default: 5.</source>
     <message>
       <source>WaveScale HDR — Preset</source>
       <translation>WaveScale HDR — Пресет</translation>
+    </message>
+    <message>
+      <source>Amount:</source>
+      <translation>Количество:</translation>
+    </message>
+    <message>
+      <source>Blend with the original image: 100% is the full effect, 0% leaves it unchanged.</source>
+      <translation>Смешивание с исходным изображением: 100% — полный эффект, 0% оставляет его без изменений.</translation>
     </message>
   </context>
   <context>
@@ -72964,6 +73782,113 @@ Drop directly on an image to apply them headlessly.</source>
 Drop it on an image to open {0} for that image.</source>
       <translation>Перетащите на холст, чтобы создать ярлык {0}, или на панель основных инструментов, чтобы добавить его.
 Перетащите на изображение, чтобы открыть {0} для этого изображения.</translation>
+    </message>
+  </context>
+  <context>
+    <name>SSSCHistoryDialog</name>
+    <message>
+      <source>1 run</source>
+      <translation>1 запуск</translation>
+    </message>
+    <message>
+      <source>{0} runs</source>
+      <translation>запусков: {0}</translation>
+    </message>
+    <message>
+      <source>nights unknown (no DATE-OBS)</source>
+      <translation>ночи неизвестны (нет DATE-OBS)</translation>
+    </message>
+    <message>
+      <source>1 night</source>
+      <translation>1 ночь</translation>
+    </message>
+    <message>
+      <source>{0} nights</source>
+      <translation>ночей: {0}</translation>
+    </message>
+    <message>
+      <source>{0}, {1}  ·  best: Stage {2} from {3} stars</source>
+      <translation>{0}, {1}  ·  лучший: этап {2}, звёзд: {3}</translation>
+    </message>
+    <message>
+      <source>LP: {0}</source>
+      <translation>LP: {0}</translation>
+    </message>
+    <message>
+      <source>SSSC Session History</source>
+      <translation>История сессий SSSC</translation>
+    </message>
+    <message>
+      <source>Session:</source>
+      <translation>Сессия:</translation>
+    </message>
+    <message>
+      <source>Date</source>
+      <translation>Дата</translation>
+    </message>
+    <message>
+      <source>Image</source>
+      <translation>Изображение</translation>
+    </message>
+    <message>
+      <source>Stage</source>
+      <translation>Этап</translation>
+    </message>
+    <message>
+      <source>Stars</source>
+      <translation>Звёзды</translation>
+    </message>
+    <message>
+      <source>B−V range</source>
+      <translation>Диапазон B−V</translation>
+    </message>
+    <message>
+      <source>RMS</source>
+      <translation>RMS</translation>
+    </message>
+    <message>
+      <source>White ref.</source>
+      <translation>Белый эталон</translation>
+    </message>
+    <message>
+      <source>Airmass</source>
+      <translation>Воздушная масса</translation>
+    </message>
+    <message>
+      <source>DATE-AVG / DATE-OBS from the image header, else when the run was calibrated</source>
+      <translation>DATE-AVG / DATE-OBS из заголовка изображения, иначе время калибровки запуска</translation>
+    </message>
+    <message>
+      <source>Delete Run</source>
+      <translation>Удалить запуск</translation>
+    </message>
+    <message>
+      <source>Remove the selected run(s) from this session's history</source>
+      <translation>Удалить выбранные запуски из истории этой сессии</translation>
+    </message>
+    <message>
+      <source>Close</source>
+      <translation>Закрыть</translation>
+    </message>
+    <message>
+      <source>(current settings)</source>
+      <translation>(текущие настройки)</translation>
+    </message>
+    <message>
+      <source>No runs saved for this session yet.</source>
+      <translation>Для этой сессии ещё нет сохранённых запусков.</translation>
+    </message>
+    <message>
+      <source>Select a run in the table first.</source>
+      <translation>Сначала выберите запуск в таблице.</translation>
+    </message>
+    <message>
+      <source>Delete {0} run(s) from this session's history? This cannot be undone.</source>
+      <translation>Удалить запуски ({0}) из истории этой сессии? Это действие нельзя отменить.</translation>
+    </message>
+    <message>
+      <source>Error</source>
+      <translation>Ошибка</translation>
     </message>
   </context>
 </TS>

@@ -74,11 +74,12 @@ Open the dialog from the <b>Planetary Stacker Viewer</b> via <b>Batch Stack&hell
 <div class="warn"><b>ROI and anchor must be meaningful across all files.</b> A batch assumes the files were shot in the same framing &mdash; same target, same scope, same camera position. If one file has the planet in the top-left and another in the bottom-right of the frame, the shared ROI will clip them differently and alignment will fail on at least one. Shoot batches with a consistent framing or process the mismatched files individually.</div>
 
 <h2>3. Output folder</h2>
-<p>Click <b>Choose Folder&hellip;</b> and pick where stacked results should land. Each file in the list produces one <code>.tif</code> file in this folder, named <code>&lt;input-stem&gt;_stack.tif</code>. For example:</p>
+<p>Click <b>Choose Folder&hellip;</b> and pick where stacked results should land. Each file in the list produces one <code>.tif</code> file in this folder. When the capture time is known (SER frame timestamps, the SER header date, or a WinJUPOS stamp already in the name), the file is named the WinJUPOS way: the stack's UTC time as <code>YYYY-MM-DD-HHMM_T</code>, then the rest of the input name, then <code>_stack</code>. Otherwise it is <code>&lt;input-stem&gt;_stack.tif</code>. For example:</p>
 <ul>
-  <li><code>jupiter_2026_11_21_2130ut.ser</code> &rarr; <code>jupiter_2026_11_21_2130ut_stack.tif</code></li>
-  <li><code>mars_run_01.avi</code> &rarr; <code>mars_run_01_stack.tif</code></li>
+  <li><code>2024-01-15-0300_0-FM-RGB-Jup.ser</code> (frames stacked around 03:01:36 UT) &rarr; <code>2024-01-15-0301_6-FM-RGB-Jup_stack.tif</code></li>
+  <li><code>mars_run_01.avi</code> (no time anywhere) &rarr; <code>mars_run_01_stack.tif</code></li>
 </ul>
+<p>Every TIFF carries the capture metadata (times, observer, camera, telescope, target, frame counts) in its header; the <a href="planetary_stacker.html#s13">Planetary Stacker output</a> section lists the cards.</p>
 <p>Existing files with the same name will be overwritten without prompting &mdash; the batch assumes you want fresh output.</p>
 
 <h2>4. Drizzle override</h2>
@@ -107,8 +108,8 @@ Open the dialog from the <b>Planetary Stacker Viewer</b> via <b>Batch Stack&hell
 <h2>8. Results</h2>
 <p>When each file completes, two things happen:</p>
 <ol>
-  <li>The float32 result is saved to <code>&lt;output-folder&gt;/&lt;input-stem&gt;_stack.tif</code> as a 32-bit floating-point TIFF.</li>
-  <li>The same result is pushed as a new SASpro document named <code>&lt;input-stem&gt;_stack</code>, opened in a sub-window, ready for stretch and post-processing.</li>
+  <li>The float32 result is saved to the output folder as a 32-bit floating-point TIFF, named as in &sect;3 and carrying the capture header.</li>
+  <li>The same result is pushed as a new SASpro document with the same name and header, opened in a sub-window, ready for stretch and post-processing. The log lists the capture times found for that file.</li>
 </ol>
 <p>By the end of a 20-file batch you'll have 20 TIFFs on disk and 20 open sub-windows in SASpro. On completion, a message box tells you how many succeeded and how many failed, plus the output path.</p>
 

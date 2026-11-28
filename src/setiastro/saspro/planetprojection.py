@@ -1539,7 +1539,10 @@ class PlanetProjectionDialog(QDialog):
             "• Wiggle: alternates L/R to create depth motion\n"
             "Optional: add a static starfield background (no parallax)."
         ))
+        self._lbl_top_default = self.lbl_top.text()
         self.lbl_top.setWordWrap(True)
+        # never soak up spare height (it left a blank band above the text)
+        self.lbl_top.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
         outer.addWidget(self.lbl_top)
 
         prev_row = QHBoxLayout()
@@ -1551,9 +1554,6 @@ class PlanetProjectionDialog(QDialog):
         prev_row.addWidget(self.btn_save_still)
         prev_row.addWidget(self.btn_save_wiggle)
         prev_row.addStretch(1)
-        from setiastro.saspro.shortcuts import ShortcutGrip
-        prev_row.addWidget(ShortcutGrip("planet_projection", self))
-        prev_row.addWidget(make_help_button("planet_projection", self))
         outer.addLayout(prev_row)
 
         self.btn_preview.clicked.connect(self._show_preview_window)
@@ -1580,6 +1580,7 @@ class PlanetProjectionDialog(QDialog):
             self.tr("Saturn (Sphere + Rings)"),
             self.tr("Pseudo surface (Height from brightness)"),
             self.tr("Galaxy (Disk deprojection)"),
+            self.tr("Moon (true relief: LOLA or from this image)"),
         ])
         form.addRow(self.tr("Planet type:"), self.cmb_planet_type)
 
@@ -1707,6 +1708,11 @@ class PlanetProjectionDialog(QDialog):
         # (Keep your existing)
         form.addRow(ps_box)
 
+        # Moon (true relief): registration + real heights (planetprojection_moon.py)
+        from setiastro.saspro.planetprojection_moon import build_moon_box
+        moon_box, self._moon_reset_exclude = build_moon_box(self)
+        form.addRow(moon_box)
+
         self.chk_auto_roi = QCheckBox(self.tr("Auto ROI from planet centroid (green channel)"))
         self.chk_auto_roi.setChecked(True)
         form.addRow("", self.chk_auto_roi)
@@ -1831,6 +1837,14 @@ class PlanetProjectionDialog(QDialog):
         btns.addWidget(self.btn_reset)
         btns.addWidget(self.btn_close)
         outer.addLayout(btns)
+        # Grip + help: their own row at the bottom
+        from setiastro.saspro.shortcuts import ShortcutGrip
+        grip_row = QHBoxLayout()
+        grip_row.setContentsMargins(0, 0, 0, 0)
+        grip_row.addWidget(ShortcutGrip("planet_projection", self))
+        grip_row.addStretch(1)
+        grip_row.addWidget(make_help_button("planet_projection", self))
+        outer.addLayout(grip_row)
 
         def _set_form_row_visible(form_layout: QFormLayout, field_widget: QWidget, visible: bool):
             """Hide/show the entire row in a QFormLayout that contains field_widget."""
@@ -1850,9 +1864,17 @@ class PlanetProjectionDialog(QDialog):
             is_sat = (t == 1)
             is_gal = (t == 3)
             is_pseudo = (t == 2)
+            is_moon = (t == 4)
 
             rings_box.setVisible(is_sat or is_gal)
             ps_box.setVisible(is_pseudo)
+            moon_box.setVisible(is_moon)
+            self.lbl_top.setText(self.tr(
+                "Explore the Moon in 3D: your image laid on real terrain heights.\n"
+                "• Placement: the Lunar Solver's solution stored with the image, or solved here\n"
+                "• Heights: NASA's LOLA terrain, or derived from this image's shadows and shading\n"
+                "• Opens in your web browser (works offline): rotate, zoom and fly over the surface"
+            ) if is_moon else self._lbl_top_default)
 
             # These are “planet disk” concepts; don’t use for pseudo surface
             self.chk_auto_roi.setEnabled(not is_pseudo)
@@ -1871,6 +1893,19 @@ class PlanetProjectionDialog(QDialog):
             self.btn_bg_choose.setEnabled(not is_pseudo)
             self.sld_bg_depth.setEnabled(not is_pseudo)
             self.lbl_bg_depth.setEnabled(not is_pseudo)
+
+            # Moon: one output (the 3D explorer); the lunar solver finds the disk
+            # or area itself and there is no starfield/background or stereo, so
+            # those rows are hidden -- the Moon box needs the room (adjustSize caps
+            # the dialog at 2/3 of the screen height).
+            from setiastro.saspro.planetprojection_moon import set_form_rows_visible
+            set_form_rows_visible(form, (self.cmb_mode, self.spin_theta, self.chk_auto_roi, self.spin_pad,
+                                         self.spin_min, self.spin_max, disk_row_w,
+                                         self.chk_starfield, self.spin_density, self.spin_seed,
+                                         bg_row, bg_depth_row, self.spin_wiggle_ms), not is_moon)
+            for b in (self.btn_preview, self.btn_save_still, self.btn_save_wiggle, self.btn_stop):
+                b.setVisible(not is_moon)
+            self._update_enable()      # mono images are fine for the Moon type only
 
             # --- Galaxy vs Saturn UI tweaks inside rings_box ---
             if is_gal:
@@ -1900,8 +1935,12 @@ class PlanetProjectionDialog(QDialog):
         self.btn_reset.clicked.connect(self._reset_to_factory)
 
         # Factory defaults for Reset. The background image file (a path) and
-        # the reviewed disk (own "Reset disk detection" button) stay.
-        self._factory = snapshot_controls(self)
+        # the reviewed disk (own "Reset disk detection" button) stay, and so do
+        # the Moon capture time / site (data about the image, not parameters).
+        self._factory = snapshot_controls(self, exclude=self._moon_reset_exclude)
+
+        from setiastro.saspro.planetprojection_moon import MoonRelief
+        self._moon = MoonRelief(self)
 
     def _reset_to_factory(self):
         restore_controls(self._factory)
@@ -1949,6 +1988,7 @@ class PlanetProjectionDialog(QDialog):
             1: self.tr("Saturn Projection"),
             2: self.tr("Pseudo Surface"),
             3: self.tr("Galaxy Projection"),
+            4: self.tr("Lunar Relief"),
         }.get(ptype, self.tr("Projection"))
 
     def _native_output_u8_for_push(self) -> np.ndarray | None:
@@ -2004,6 +2044,8 @@ class PlanetProjectionDialog(QDialog):
 
         if ptype == 2:
             return self.tr("Pseudo Surface")
+        if ptype == 4:
+            return self.tr("Lunar Relief")
         if (ptype == 3) or (mode == 5):
             return self.tr("Galaxy Polar View")
         if ptype == 1:
@@ -2180,6 +2222,13 @@ class PlanetProjectionDialog(QDialog):
             self.image is not None and isinstance(self.image, np.ndarray)
             and self.image.ndim == 3 and self.image.shape[2] >= 3
         )
+        # Moon (true relief) also takes mono stacks
+        if (not ok and isinstance(self.image, np.ndarray) and self.image.ndim == 2
+                and getattr(self, "cmb_planet_type", None) is not None
+                and self.cmb_planet_type.currentIndex() == 4):
+            ok = True
+        if getattr(self, "_moon", None) is not None and self._moon.busy():
+            ok = False
         self.btn_generate.setEnabled(bool(ok))
 
     def _compute_roi(self):
@@ -2213,6 +2262,11 @@ class PlanetProjectionDialog(QDialog):
 
         if self.image is None:
             QMessageBox.information(self, self._ui_title(), self.tr("No image loaded."))
+            return
+
+        # Moon (true relief) has its own pipeline and takes mono images too
+        if int(self.cmb_planet_type.currentIndex()) == 4:
+            self._moon.generate()
             return
 
         img = np.asarray(self.image)
@@ -3177,6 +3231,9 @@ class PlanetProjectionDialog(QDialog):
 
     def closeEvent(self, e):
         self._stop_wiggle()
+        moon = getattr(self, "_moon", None)
+        if moon is not None:
+            moon.shutdown()
         super().closeEvent(e)
 
 class PlanetDiskAdjustDialog(QDialog):

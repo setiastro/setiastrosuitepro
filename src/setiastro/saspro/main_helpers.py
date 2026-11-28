@@ -110,6 +110,12 @@ def normalize_save_path_chosen_filter(path: str, selected_filter: str) -> Tuple[
     else:
         final_ext = default_ext
 
+    # Compressed FITS keeps an inner FITS extension ("name.fits" typed with
+    # the .fz filter becomes "name.fits.fz", a bare "name" becomes
+    # "name.fit.fz"), the spelling Siril and fpack write.
+    if final_ext == "fz" and typed != "fz":
+        stem = f"{stem}.{typed}" if typed in ("fit", "fits", "fts") else f"{stem}.fit"
+
     # Sanitize only the stem, then re-attach the chosen extension, so the
     # extension is never rewritten by the sanitizer regardless of its internals.
     safe_stem = _sanitize_filename(stem or "untitled",

@@ -228,6 +228,12 @@ class SettingsDialog(QDialog):
         self._initial_native_menu_bar = True
 
         self.chk_save_shortcuts = QCheckBox(self.tr("Save desktop shortcuts on exit"))
+        self.chk_confirm_exit = QCheckBox(self.tr("Always ask before exiting"))
+        self.chk_confirm_exit.setToolTip(self.tr(
+            "Checked, SASpro asks before it closes.\n"
+            "Unchecked, it only asks when an image has unsaved edits or was\n"
+            "never saved, or an install or download is still running."
+        ))
         self.chk_open_all_hdus = QCheckBox(self.tr("Open All detected HDUs"))
         self.chk_open_all_hdus.setToolTip(self.tr(
             "When checked, opening a FITS or XISF file also opens extra HDUs "
@@ -466,6 +472,7 @@ class SettingsDialog(QDialog):
 
         left_col.addRow(self.tr("Astrometry.net API key:"), self.le_astrometry)
         left_col.addRow(self.chk_save_shortcuts)
+        left_col.addRow(self.chk_confirm_exit)
         left_col.addRow(self.chk_open_all_hdus)
         left_col.addRow(self.chk_smart_view_naming)
 
@@ -1881,7 +1888,7 @@ class SettingsDialog(QDialog):
         QMessageBox.information(
             self, self.tr("Already Installing"),
             self.tr("This is already being installed by the setup window. "
-                    "About > Welcome and Setup shows its progress."))
+                    "Help > Welcome and Setup shows its progress."))
         return True
 
     def _install_or_update_accel(self):
@@ -2031,6 +2038,9 @@ class SettingsDialog(QDialog):
         # Shortcuts
         self.chk_save_shortcuts.setChecked(
             self.settings.value("shortcuts/save_on_exit", True, type=bool)
+        )
+        self.chk_confirm_exit.setChecked(
+            self.settings.value("ui/confirm_exit", True, type=bool)
         )
         self.chk_open_all_hdus.setChecked(
             self.settings.value("files/open_auxiliary_images", True, type=bool)
@@ -2312,6 +2322,7 @@ class SettingsDialog(QDialog):
             except Exception:
                 self.settings.setValue(self._swap_workdir_key, "")
         self.settings.setValue("shortcuts/save_on_exit", self.chk_save_shortcuts.isChecked())
+        self.settings.setValue("ui/confirm_exit", self.chk_confirm_exit.isChecked())
         self.settings.setValue("files/open_auxiliary_images", self.chk_open_all_hdus.isChecked())
         self.settings.setValue("files/smart_view_naming", self.chk_smart_view_naming.isChecked())
         self.settings.setValue("api/astrometry_key", self.le_astrometry.text().strip())

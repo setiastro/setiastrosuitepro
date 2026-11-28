@@ -621,6 +621,7 @@ class ProjectReader:
                     )
                 else:
                     doc = self.dm.create_document(img, metadata=meta, name=disp)
+                doc.saved_to_file = True   # the project file holds it
                 doc_id_map[doc_id] = doc
 
                 # --- restore embedded header, if present --------------------------
@@ -1022,6 +1023,7 @@ class LegacyProjectReader:
                 meta["legacy_mask_present"] = True
 
             doc = self.dm.create_document(img, metadata=meta, name=disp)
+            doc.saved_to_file = True   # the project file holds it
 
             # Attach legacy mask (in-memory only)
             try:
